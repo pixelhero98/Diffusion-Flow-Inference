@@ -17,7 +17,7 @@ Diffusion-Flow-Inference evaluates optimized diffusion schedules after mapping t
 
 This repository is source-only. Large datasets, generated outputs, trained backbone artifacts, and local virtual environments are intentionally not committed.
 
-A reduced public processed-data bundle for review is available on Hugging Face:
+A reduced public processed-data bundle for review is available at an `anonymous account` on Hugging Face:
 
 ```text
 https://huggingface.co/datasets/pixelhero98/d2f-dataset
