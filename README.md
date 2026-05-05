@@ -77,3 +77,7 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m diffusion_flow_infer
   --dataset_bundle_mode auto \
   --dataset_bundle_extract_root outputs/dataset_bundles/extracted
 ```
+
+## License
+
+MIT. See `LICENSE`.
