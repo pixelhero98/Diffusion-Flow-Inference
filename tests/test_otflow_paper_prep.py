@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 import diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization as runner
-from diffusion_flow_inference.schedules.diffusion_flow import build_schedule_grid, load_external_schedule_catalog
+from diffusion_flow_inference.schedules.diffusion_flow import build_schedule_grid, load_external_schedule_catalog, schedule_time_alignment
 from diffusion_flow_inference.schedules.paper_registry import (
     BASELINE_SCHEDULE_KEYS,
     FLOW_TIME_SCHEDULE_KEYS,
@@ -22,6 +22,13 @@ from diffusion_flow_inference.diagnostics.signal_traces import NATIVE_INFO_GROWT
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AYS_SD15_SIGMAS = np.asarray([14.615, 6.475, 3.861, 2.697, 1.886, 1.396, 0.963, 0.652, 0.399, 0.152, 0.029], dtype=np.float64)
 AYS_SD15_TIMESTEPS = np.asarray([999, 850, 736, 645, 545, 455, 343, 233, 124, 24, 0], dtype=np.float64)
+GITS_OLD_EDM_CIFAR_SIGMAS = np.asarray([80.0, 10.9836, 3.8811, 1.5840, 0.5666, 0.1698, 0.0020], dtype=np.float64)
+GITS_COMFY_COEFF_120_SIGMAS = {
+    10: np.asarray([14.61464119, 5.85520077, 2.84484982, 1.67050016, 1.08895338, 0.74807048, 0.50118381, 0.32104823, 0.19894916, 0.09824532, 0.02916753], dtype=np.float64),
+    12: np.asarray([14.61464119, 5.85520077, 3.07277966, 1.98035145, 1.36964464, 0.95350921, 0.69515091, 0.50118381, 0.36617002, 0.25053367, 0.17026083, 0.09824532, 0.02916753], dtype=np.float64),
+    16: np.asarray([14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.12350607, 1.51179266, 1.08895338, 0.83188516, 0.64427125, 0.50118381, 0.41087446, 0.32104823, 0.25053367, 0.19894916, 0.13792117, 0.09824532, 0.02916753], dtype=np.float64),
+    20: np.asarray([14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.19988537, 1.61558151, 1.24153244, 0.95350921, 0.74807048, 0.59516323, 0.50118381, 0.41087446, 0.34370604, 0.29807833, 0.25053367, 0.22545385, 0.19894916, 0.17026083, 0.13792117, 0.09824532, 0.02916753], dtype=np.float64),
+}
 
 
 def _normalize_descending(values: np.ndarray) -> np.ndarray:
@@ -35,12 +42,24 @@ def _old_ays_flow_time_resample(n_steps: int) -> np.ndarray:
     return np.interp(dst, src, progression)
 
 
-def _ays_logsigma_expected(n_steps: int) -> np.ndarray:
-    src = np.linspace(0.0, 1.0, int(AYS_SD15_SIGMAS.size), dtype=np.float64)
+def _old_gits_flow_time_resample(n_steps: int) -> np.ndarray:
+    progression = _normalize_descending(GITS_OLD_EDM_CIFAR_SIGMAS)
+    src = np.linspace(0.0, 1.0, int(progression.size), dtype=np.float64)
     dst = np.linspace(0.0, 1.0, int(n_steps) + 1, dtype=np.float64)
-    sigmas = np.exp(np.interp(dst, src, np.log(AYS_SD15_SIGMAS)))
-    sigmas[0] = AYS_SD15_SIGMAS[0]
-    sigmas[-1] = AYS_SD15_SIGMAS[-1]
+    return np.interp(dst, src, progression)
+
+
+def _loglinear_descending(values: np.ndarray, n_steps: int) -> np.ndarray:
+    src = np.linspace(0.0, 1.0, int(values.size), dtype=np.float64)
+    dst = np.linspace(0.0, 1.0, int(n_steps) + 1, dtype=np.float64)
+    interpolated = np.exp(np.interp(dst, src, np.log(values)))
+    interpolated[0] = values[0]
+    interpolated[-1] = values[-1]
+    return interpolated
+
+
+def _ays_logsigma_expected(n_steps: int) -> np.ndarray:
+    sigmas = _loglinear_descending(AYS_SD15_SIGMAS, n_steps)
     return _normalize_descending(sigmas)
 
 
@@ -91,9 +110,35 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             self.assertAlmostEqual(float(grid[-1]), 1.0)
             self.assertTrue(bool(np.all(np.diff(grid) > 0.0)))
 
+    def test_gits_uses_comfyui_sd_sigma_tables_for_main_nfes(self) -> None:
+        self.assertEqual(schedule_time_alignment("gits"), "runtime_gits_sd15_logsigma_coeff_1_20")
+        for n_steps in (10, 12, 16):
+            grid = np.asarray(build_schedule_grid("gits", n_steps), dtype=np.float64)
+            expected = _normalize_descending(GITS_COMFY_COEFF_120_SIGMAS[n_steps])
+            old_flow_resample = _old_gits_flow_time_resample(n_steps)
+            self.assertTrue(np.allclose(grid, expected, atol=1e-12, rtol=1e-12))
+            self.assertFalse(np.allclose(grid, old_flow_resample, atol=1e-6, rtol=1e-6))
+            self.assertEqual(len(grid), n_steps + 1)
+            self.assertAlmostEqual(float(grid[0]), 0.0)
+            self.assertAlmostEqual(float(grid[-1]), 1.0)
+            self.assertTrue(bool(np.all(np.diff(grid) > 0.0)))
+
+    def test_gits_above_20_steps_uses_comfyui_loglinear_interpolation(self) -> None:
+        n_steps = 24
+        grid = np.asarray(build_schedule_grid("gits", n_steps), dtype=np.float64)
+        expected_sigmas = _loglinear_descending(GITS_COMFY_COEFF_120_SIGMAS[20], n_steps)
+        expected = _normalize_descending(expected_sigmas)
+        self.assertTrue(np.allclose(grid, expected, atol=1e-12, rtol=1e-12))
+        self.assertEqual(len(grid), n_steps + 1)
+        self.assertAlmostEqual(float(grid[0]), 0.0)
+        self.assertAlmostEqual(float(grid[-1]), 1.0)
+        self.assertTrue(bool(np.all(np.diff(grid) > 0.0)))
+
     def test_external_schedule_catalog_documents_mapping_limits(self) -> None:
         catalog = load_external_schedule_catalog()
         self.assertIn("diffusion noise space", catalog["ays"]["notes"])
+        self.assertIn("ComfyUI Stable Diffusion GITSScheduler", catalog["gits"]["notes"])
+        self.assertIn("not a full GITS dynamic-programming warmup optimizer", catalog["gits"]["notes"])
         self.assertIn("not a vendored full replication", catalog["ots"]["notes"])
         self.assertIn("ATSS-inspired", catalog["atss"]["notes"])
         self.assertIn("flow-time late-biased", catalog["flowts_power_sampling"]["notes"])

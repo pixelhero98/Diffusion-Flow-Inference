@@ -11,7 +11,7 @@
     "source_url": "https://github.com/zju-pi/diff-sampler",
     "paper_url": "https://arxiv.org/abs/2405.11326",
     "mapping_status": "implemented",
-    "notes": "Mapped from the official GITS example schedule in the diff-sampler repo, converted into an OTFlow progression and deterministically resampled for NFE 10, 12, and 16."
+    "notes": "Mapped from the public ComfyUI Stable Diffusion GITSScheduler sigma tables with coeff = 1.20. NFE values up to 20 use the exact precomputed sigma table, while larger grids use ComfyUI-style log-linear interpolation in diffusion noise space before a single normalization into OTFlow runtime. This is not a full GITS dynamic-programming warmup optimizer, which is model/data dependent."
   },
   "flowts_power_sampling": {
     "display_name": "FlowTS power sampling",

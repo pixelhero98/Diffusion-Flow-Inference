@@ -31,7 +31,27 @@ _AYS_SD15_REFERENCE_SIGMAS: Tuple[float, ...] = (
     0.152,
     0.029,
 )
-_GITS_REFERENCE_SIGMAS: Tuple[float, ...] = (80.0, 10.9836, 3.8811, 1.5840, 0.5666, 0.1698, 0.0020)
+_GITS_SD15_COMFYUI_SIGMAS_BY_STEPS: Dict[int, Tuple[float, ...]] = {
+    2: (14.61464119, 0.803307, 0.02916753),
+    3: (14.61464119, 1.56271636, 0.52423614, 0.02916753),
+    4: (14.61464119, 2.36326075, 0.92192322, 0.36617002, 0.02916753),
+    5: (14.61464119, 2.84484982, 1.24153244, 0.59516323, 0.25053367, 0.02916753),
+    6: (14.61464119, 5.85520077, 2.05039096, 0.95350921, 0.45573691, 0.17026083, 0.02916753),
+    7: (14.61464119, 5.85520077, 2.45070267, 1.24153244, 0.64427125, 0.29807833, 0.09824532, 0.02916753),
+    8: (14.61464119, 5.85520077, 2.45070267, 1.36964464, 0.803307, 0.45573691, 0.25053367, 0.09824532, 0.02916753),
+    9: (14.61464119, 5.85520077, 2.84484982, 1.61558151, 0.95350921, 0.59516323, 0.36617002, 0.19894916, 0.09824532, 0.02916753),
+    10: (14.61464119, 5.85520077, 2.84484982, 1.67050016, 1.08895338, 0.74807048, 0.50118381, 0.32104823, 0.19894916, 0.09824532, 0.02916753),
+    11: (14.61464119, 5.85520077, 2.95596409, 1.84880662, 1.24153244, 0.83188516, 0.59516323, 0.41087446, 0.27464288, 0.17026083, 0.09824532, 0.02916753),
+    12: (14.61464119, 5.85520077, 3.07277966, 1.98035145, 1.36964464, 0.95350921, 0.69515091, 0.50118381, 0.36617002, 0.25053367, 0.17026083, 0.09824532, 0.02916753),
+    13: (14.61464119, 6.77309084, 3.46139455, 2.36326075, 1.56271636, 1.08895338, 0.803307, 0.59516323, 0.45573691, 0.34370604, 0.25053367, 0.17026083, 0.09824532, 0.02916753),
+    14: (14.61464119, 6.77309084, 3.46139455, 2.45070267, 1.61558151, 1.162866, 0.86115354, 0.64427125, 0.50118381, 0.38853383, 0.29807833, 0.22545385, 0.17026083, 0.09824532, 0.02916753),
+    15: (14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.12350607, 1.51179266, 1.08895338, 0.83188516, 0.64427125, 0.50118381, 0.38853383, 0.29807833, 0.22545385, 0.17026083, 0.09824532, 0.02916753),
+    16: (14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.12350607, 1.51179266, 1.08895338, 0.83188516, 0.64427125, 0.50118381, 0.41087446, 0.32104823, 0.25053367, 0.19894916, 0.13792117, 0.09824532, 0.02916753),
+    17: (14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.12350607, 1.51179266, 1.08895338, 0.83188516, 0.64427125, 0.50118381, 0.41087446, 0.34370604, 0.27464288, 0.22545385, 0.17026083, 0.13792117, 0.09824532, 0.02916753),
+    18: (14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.19988537, 1.61558151, 1.20157266, 0.92192322, 0.72133851, 0.57119018, 0.45573691, 0.36617002, 0.29807833, 0.25053367, 0.19894916, 0.17026083, 0.13792117, 0.09824532, 0.02916753),
+    19: (14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.19988537, 1.61558151, 1.24153244, 0.95350921, 0.74807048, 0.59516323, 0.4783645, 0.38853383, 0.32104823, 0.27464288, 0.22545385, 0.19894916, 0.17026083, 0.13792117, 0.09824532, 0.02916753),
+    20: (14.61464119, 7.49001646, 4.65472794, 3.07277966, 2.19988537, 1.61558151, 1.24153244, 0.95350921, 0.74807048, 0.59516323, 0.50118381, 0.41087446, 0.34370604, 0.29807833, 0.25053367, 0.22545385, 0.19894916, 0.17026083, 0.13792117, 0.09824532, 0.02916753),
+}
 _FLOWTS_POWER_KSCALE = 0.03
 _OTS_DEFAULT_EPS = 1e-3
 _OTS_LINEAR_BETA_0 = 0.1
@@ -42,7 +62,7 @@ _SCHEDULE_TIME_ALIGNMENT: Dict[str, str] = {
     "late_power_3": "runtime_late_power_3",
     "flowts_power_sampling": "runtime_flowts_power_sampling_kscale_0_03",
     "ays": "runtime_ays_sd15_logsigma_affine",
-    "gits": "runtime_gits_sigma_affine",
+    "gits": "runtime_gits_sd15_logsigma_coeff_1_20",
     "ots": "runtime_ots_vp_time_affine",
 }
 
@@ -78,15 +98,6 @@ def _ensure_monotone(grid: Sequence[float]) -> Tuple[float, ...]:
     out[0] = 0.0
     out[-1] = 1.0
     return tuple(float(x) for x in out)
-
-
-def _resample_reference_progression(progression: Sequence[float], n_steps: int) -> Tuple[float, ...]:
-    ref = np.asarray(progression, dtype=np.float64)
-    if ref.ndim != 1 or ref.size < 2:
-        raise ValueError("Reference progression must be one-dimensional with at least two points.")
-    src = np.linspace(0.0, 1.0, int(ref.size), dtype=np.float64)
-    dst = np.linspace(0.0, 1.0, int(n_steps) + 1, dtype=np.float64)
-    return _ensure_monotone(np.interp(dst, src, ref).tolist())
 
 
 def _normalize_descending_reference(values: Sequence[float]) -> Tuple[float, ...]:
@@ -129,8 +140,14 @@ def _ays_reference_progression_for_steps(n_steps: int) -> Tuple[float, ...]:
     return _normalize_descending_reference(sigmas)
 
 
-def _gits_reference_progression() -> Tuple[float, ...]:
-    return _normalize_descending_reference(_GITS_REFERENCE_SIGMAS)
+def _gits_reference_progression_for_steps(n_steps: int) -> Tuple[float, ...]:
+    n_steps = int(n_steps)
+    if n_steps < 1:
+        raise ValueError("n_steps must be positive.")
+    sigmas = _GITS_SD15_COMFYUI_SIGMAS_BY_STEPS.get(n_steps)
+    if sigmas is None:
+        sigmas = _loglinear_descending_reference(_GITS_SD15_COMFYUI_SIGMAS_BY_STEPS[20], n_steps)
+    return _normalize_descending_reference(sigmas)
 
 
 def _scipy_optimizer():
@@ -352,14 +369,10 @@ def build_schedule_grid(schedule_key: str, n_steps: int) -> Optional[Tuple[float
     if key == "ays":
         return _ays_reference_progression_for_steps(int(n_steps))
     if key == "gits":
-        return _resample_reference_progression(_gits_reference_progression(), int(n_steps))
+        return _gits_reference_progression_for_steps(int(n_steps))
     if key == "ots":
         return _ots_reference_progression(int(n_steps))
     return None
-
-
-
-
 def schedule_display_name(schedule_key: str) -> str:
     key = str(schedule_key).strip().lower()
     names = {
