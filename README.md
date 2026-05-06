@@ -6,7 +6,7 @@ Diffusion-Flow-Inference evaluates optimized diffusion schedules after mapping t
 ## Package Layout
 
 - `diffusion_flow_inference.datasets`: dataset settings, loaders, audits, and experiment plans.
-- `diffusion_flow_inference.backbones.settings`: backbone configs, modules, model definitions, and baseline architectures.
+- `diffusion_flow_inference.backbones.settings`: OTFlow backbone configs, modules, and model definitions.
 - `diffusion_flow_inference.backbones.training`: backbone training, benchmarking, readiness audits, and manifest registry.
 - `diffusion_flow_inference.schedules`: diffusion-to-flow schedule construction and schedule registry.
 - `diffusion_flow_inference.solvers`: solver runtime settings.

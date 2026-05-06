@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - older torch
     SDPBackend = None
     sdpa_kernel = None
 
-from diffusion_flow_inference.backbones.settings.otflow_baselines import RectifiedFlowLOB
+from diffusion_flow_inference.backbones.settings.rectified_flow import RectifiedFlowLOB
 from diffusion_flow_inference.backbones.settings.config import LOBConfig
 
 

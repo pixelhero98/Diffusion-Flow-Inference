@@ -422,12 +422,11 @@ def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow
         "data": type(cfg.data),
         "model": type(cfg.model),
         "fm": type(cfg.fm),
-        "nf": type(cfg.nf),
         "train": type(cfg.train),
         "sample": type(cfg.sample),
     }
     for section_name, cls in section_types.items():
-        section_values = dict(cfg_dict[section_name])
+        section_values = dict(cfg_dict.get(section_name, {}))
         if section_name == "train":
             section_values["device"] = device
         setattr(cfg, section_name, cls(**section_values))

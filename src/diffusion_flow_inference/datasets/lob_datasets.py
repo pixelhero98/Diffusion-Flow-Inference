@@ -26,7 +26,7 @@ from typing import Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from diffusion_flow_inference.backbones.settings.otflow_baselines import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import LOBConfig
 from diffusion_flow_inference.common.paths import project_data_root
 
 ArrayLike = Union[np.ndarray, torch.Tensor]

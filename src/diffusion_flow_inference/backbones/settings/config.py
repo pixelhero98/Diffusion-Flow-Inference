@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 
 
-_CONFIG_SECTIONS = ("data", "model", "fm", "nf", "train", "sample")
+_CONFIG_SECTIONS = ("data", "model", "fm", "train", "sample")
 
 
 @dataclass
@@ -34,12 +34,6 @@ class SharedModelConfig:
     hidden_dim: int = 128
     dropout: float = 0.1
     cond_dim: int = 0
-    baseline_latent_dim: int = 32
-    vae_kl_weight: float = 0.1
-    timegan_supervision_weight: float = 10.0
-    timegan_moment_weight: float = 10.0
-    kovae_pred_weight: float = 1.0
-    kovae_ridge: float = 1e-3
     ctx_encoder: str = "transformer"
     ctx_causal: bool = True
     ctx_local_kernel: int = 5
@@ -47,9 +41,6 @@ class SharedModelConfig:
     field_parameterization: str = "instantaneous"
     ctx_heads: int = 4
     ctx_layers: int = 2
-    gan_noise_dim: int = 64
-    cgan_recon_weight: float = 5.0
-    diffusion_steps: int = 32
     adaptive_context: bool = False
     adaptive_context_ratio: float = 1.5
     adaptive_context_min: int = 64
@@ -101,13 +92,6 @@ class FMConfig:
     meanflow_data_proportion: float = 0.75
     meanflow_norm_p: float = 1.0
     meanflow_norm_eps: float = 0.01
-
-
-@dataclass
-class NFConfig:
-    flow_layers: int = 6
-    flow_scale_clip: float = 2.0
-    share_coupling_backbone: bool = True
 
 
 @dataclass
@@ -164,7 +148,6 @@ class LOBConfig:
     data: LOBDataConfig = field(default_factory=LOBDataConfig)
     model: SharedModelConfig = field(default_factory=SharedModelConfig)
     fm: FMConfig = field(default_factory=FMConfig)
-    nf: NFConfig = field(default_factory=NFConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     sample: SampleConfig = field(default_factory=SampleConfig)
 
@@ -173,7 +156,6 @@ class LOBConfig:
         data: Optional[LOBDataConfig] = None,
         model: Optional[SharedModelConfig] = None,
         fm: Optional[FMConfig] = None,
-        nf: Optional[NFConfig] = None,
         train: Optional[TrainConfig] = None,
         sample: Optional[SampleConfig] = None,
         **flat_overrides: Any,
@@ -181,7 +163,6 @@ class LOBConfig:
         object.__setattr__(self, "data", data if data is not None else LOBDataConfig())
         object.__setattr__(self, "model", model if model is not None else SharedModelConfig())
         object.__setattr__(self, "fm", fm if fm is not None else FMConfig())
-        object.__setattr__(self, "nf", nf if nf is not None else NFConfig())
         object.__setattr__(self, "train", train if train is not None else TrainConfig())
         object.__setattr__(self, "sample", sample if sample is not None else SampleConfig())
         if flat_overrides:
@@ -243,7 +224,6 @@ class LOBConfig:
             "data": asdict(self.data),
             "model": asdict(self.model),
             "fm": asdict(self.fm),
-            "nf": asdict(self.nf),
             "train": train_dict,
             "sample": asdict(self.sample),
         }

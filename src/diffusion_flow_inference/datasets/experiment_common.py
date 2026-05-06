@@ -6,7 +6,7 @@ from typing import Dict, List, Mapping
 
 import torch
 
-from diffusion_flow_inference.backbones.settings.otflow_baselines import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import LOBConfig
 from diffusion_flow_inference.datasets.lob_datasets import (
     DEFAULT_SYNTHETIC_LENGTH,
     build_dataset_splits_from_cryptos,
@@ -141,18 +141,9 @@ OTFLOW_PRESET_VARIANTS: Mapping[str, Mapping[str, Dict[str, object]]] = {
 _OPTIONAL_CFG_OVERRIDES = (
     "token_dim",
     "hidden_dim",
-    "baseline_latent_dim",
-    "vae_kl_weight",
-    "timegan_supervision_weight",
-    "timegan_moment_weight",
-    "kovae_pred_weight",
-    "kovae_ridge",
     "ctx_encoder",
     "ctx_causal",
     "ctx_local_kernel",
-    "gan_noise_dim",
-    "cgan_recon_weight",
-    "diffusion_steps",
     "field_parameterization",
     "fu_net_type",
     "fu_net_layers",

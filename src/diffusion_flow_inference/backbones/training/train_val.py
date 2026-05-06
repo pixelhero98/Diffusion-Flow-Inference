@@ -7,7 +7,6 @@ Adds evaluation helpers:
 - Horizon-wise rollout stability
 - NFE speed/quality benchmarking
 - Generic ablation runner
-- Proper two-stage training helper for BiFlowNFLOB
 """
 
 from __future__ import annotations
@@ -24,32 +23,15 @@ import torch
 from torch.utils.data import DataLoader, RandomSampler
 from torch.optim.swa_utils import AveragedModel
 
-from diffusion_flow_inference.backbones.settings.otflow_baselines import (
-    LOBConfig,
-    BiFlowLOB,
-    BiFlowNFLOB,
-    DeepMarketCGANBaseline,
-    DeepMarketTRADESBaseline,
-    TimeCausalVAEBaseline,
-    TimeGANBaseline,
-    KoVAEBaseline,
-)
+from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.modules import EMAModel
 from diffusion_flow_inference.backbones.settings.model import OTFlow
 from diffusion_flow_inference.datasets.lob_datasets import L2FeatureMap, WindowedLOBParamsDataset, compute_basic_l2_metrics
 from diffusion_flow_inference.datasets.medical_datasets import SLEEP_EDF_DATASET_KEY, SLEEP_EDF_STAGE_NAMES
 from diffusion_flow_inference.common.utils import flatten_dict, unflatten_to_nested, microstructure_series
 
 
-SUPPORTED_MODEL_NAMES = (
-    "otflow",
-    "biflow",
-    "biflow_nf",
-    "trades",
-    "cgan",
-    "timecausalvae",
-    "timegan",
-    "kovae",
-)
+SUPPORTED_MODEL_NAMES = ("otflow",)
 CORE_L2_STATS = ("spread", "depth", "imb", "ret")
 
 
@@ -311,21 +293,8 @@ def _normalize_model_name(model_name: str) -> str:
 
 
 def _build_model(model_name: str, cfg: LOBConfig, device: torch.device) -> torch.nn.Module:
-    if model_name == "otflow":
-        return OTFlow(cfg).to(device)
-    if model_name == "biflow":
-        return BiFlowLOB(cfg).to(device)
-    if model_name == "trades":
-        return DeepMarketTRADESBaseline(cfg).to(device)
-    if model_name == "cgan":
-        return DeepMarketCGANBaseline(cfg).to(device)
-    if model_name == "timecausalvae":
-        return TimeCausalVAEBaseline(cfg).to(device)
-    if model_name == "timegan":
-        return TimeGANBaseline(cfg).to(device)
-    if model_name == "kovae":
-        return KoVAEBaseline(cfg).to(device)
-    return BiFlowNFLOB(cfg).to(device)
+    _normalize_model_name(model_name)
+    return OTFlow(cfg).to(device)
 
 
 def _compute_training_loss(
@@ -336,35 +305,10 @@ def _compute_training_loss(
     fut: Optional[torch.Tensor],
     cond: Optional[torch.Tensor],
     meta: Any,
-    loss_mode: Optional[str],
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    if isinstance(model, OTFlow):
-        return model.loss(tgt, hist, fut=fut, cond=cond, meta=meta)
-
-    if isinstance(model, BiFlowLOB):
-        loss = model.fm_loss(tgt, hist, cond=cond)
-        return loss, {"loss": float(loss.detach().cpu())}
-
-    if isinstance(model, BiFlowNFLOB):
-        mode = (loss_mode or "nll").lower()
-        if mode == "nll":
-            loss = model.nll_loss(tgt, hist, cond=cond)
-            return loss, {"loss": float(loss.detach().cpu()), "stage": "nll"}
-        if mode == "biflow":
-            loss, logs = model.biflow_loss(tgt, hist, cond=cond)
-            logs = dict(logs)
-            logs["loss"] = float(loss.detach().cpu())
-            logs["stage"] = "biflow"
-            return loss, logs
-        raise ValueError(f"Unknown loss_mode for BiFlowNFLOB: {loss_mode}")
-
-    if isinstance(model, DeepMarketTRADESBaseline):
-        return model.loss(tgt, hist, cond=cond, meta=meta)
-
-    if isinstance(model, (TimeCausalVAEBaseline, KoVAEBaseline)):
-        return model.loss(tgt, hist, cond=cond, meta=meta)
-
-    raise RuntimeError("Unexpected model type.")
+    if not isinstance(model, OTFlow):
+        raise TypeError("Training only supports OTFlow models.")
+    return model.loss(tgt, hist, fut=fut, cond=cond, meta=meta)
 
 
 def train_loop(
@@ -375,24 +319,14 @@ def train_loop(
     log_every: int = 200,
     model: Optional[torch.nn.Module] = None,
     optimizer: Optional[torch.optim.Optimizer] = None,
-    loss_mode: Optional[str] = None,
     shuffle: bool = True,
 ) -> torch.nn.Module:
-    """Train a model on next-step prediction in normalized param space.
-
-    Parameters
-    ----------
-    loss_mode : Optional[str]
-        For BiFlowNFLOB only:
-        - None / "nll"   : train forward flow NLL
-        - "biflow"       : train reverse flow with biflow_loss (requires freeze_forward())
+    """Train the OTFlow model on next-step prediction in normalized param space.
 
     Features:
     - EMA model averaging (cfg.ema_decay > 0)
     - LR warmup + cosine decay (cfg.lr_schedule, cfg.lr_warmup_steps)
     """
-    from diffusion_flow_inference.backbones.settings.otflow_baselines import EMAModel
-
     device = cfg.device
     loader = make_loader(ds, cfg.batch_size, shuffle=shuffle, drop_last=False)
     if len(loader) == 0:
@@ -407,82 +341,9 @@ def train_loop(
     else:
         model = model.to(device)
 
-    if isinstance(model, OTFlow):
-        model.set_param_normalizer(ds.params_mean, ds.params_std)
-
-    if isinstance(model, DeepMarketCGANBaseline):
-        gen_params = list(model.generator_hist.parameters()) + list(model.generator.parameters())
-        disc_params = list(model.discriminator_hist.parameters()) + list(model.discriminator.parameters())
-        opt_g = torch.optim.AdamW(gen_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-        opt_d = torch.optim.AdamW(disc_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-
-        model.train()
-        it = iter(loader)
-        for step in range(1, steps + 1):
-            try:
-                batch = next(it)
-            except StopIteration:
-                it = iter(loader)
-                batch = next(it)
-
-            hist, tgt, fut, cond, meta = _parse_batch(batch)
-            del fut, cond, meta
-            hist = hist.to(device).float()
-            tgt = tgt.to(device).float()
-
-            train_context_len = sample_training_context_length(hist.shape[1], cfg)
-            hist = crop_history_window(hist, train_context_len)
-
-            logs = model.adversarial_step(
-                tgt,
-                hist,
-                opt_g,
-                opt_d,
-                grad_clip=float(cfg.grad_clip),
-            )
-            if step % log_every == 0:
-                print(f"[{model_name}] step {step}/{steps}  gen={logs['gen_total']:.4f}  disc={logs['disc']:.4f}  details={logs}")
-        return model.eval()
-
-    if isinstance(model, TimeGANBaseline):
-        gen_params = (
-            list(model.history_encoder.parameters())
-            + list(model.embedder.parameters())
-            + list(model.recovery.parameters())
-            + list(model.generator.parameters())
-            + list(model.supervisor.parameters())
-        )
-        disc_params = list(model.discriminator.parameters())
-        opt_g = torch.optim.AdamW(gen_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-        opt_d = torch.optim.AdamW(disc_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-
-        model.train()
-        it = iter(loader)
-        for step in range(1, steps + 1):
-            try:
-                batch = next(it)
-            except StopIteration:
-                it = iter(loader)
-                batch = next(it)
-
-            hist, tgt, fut, cond, meta = _parse_batch(batch)
-            del fut, cond, meta
-            hist = hist.to(device).float()
-            tgt = tgt.to(device).float()
-
-            train_context_len = sample_training_context_length(hist.shape[1], cfg)
-            hist = crop_history_window(hist, train_context_len)
-
-            logs = model.adversarial_step(
-                tgt,
-                hist,
-                opt_g,
-                opt_d,
-                grad_clip=float(cfg.grad_clip),
-            )
-            if step % log_every == 0:
-                print(f"[{model_name}] step {step}/{steps}  gen={logs['gen_total']:.4f}  disc={logs['disc']:.4f}  details={logs}")
-        return model.eval()
+    if not isinstance(model, OTFlow):
+        raise TypeError("train_loop only supports OTFlow models.")
+    model.set_param_normalizer(ds.params_mean, ds.params_std)
 
     opt = optimizer or torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     accum_steps = max(1, int(getattr(cfg.train, "grad_accum_steps", 1)))
@@ -530,7 +391,6 @@ def train_loop(
                 fut=fut,
                 cond=cond,
                 meta=meta,
-                loss_mode=loss_mode,
             )
 
         micro_step += 1
@@ -571,32 +431,6 @@ def train_loop(
     # Apply EMA weights for evaluation (overrides SWA if both are enabled, but usually one is chosen)
     elif ema is not None:
         ema.apply_shadow(model)
-
-    return model.eval()
-
-
-def train_biflow_nf_two_stage(
-    ds: WindowedLOBParamsDataset,
-    cfg: LOBConfig,
-    stage1_steps: int = 10_000,
-    stage2_steps: int = 10_000,
-    log_every: int = 200,
-) -> BiFlowNFLOB:
-    """Fairer NF baseline training:
-    1) forward flow NLL
-    2) freeze forward flow
-    3) reverse flow BiFlow-style distillation/alignment
-    """
-    model = BiFlowNFLOB(cfg).to(cfg.device)
-
-    print("[biflow_nf] Stage 1/2: forward NLL")
-    train_loop(ds, cfg, model_name="biflow_nf", steps=stage1_steps, log_every=log_every, model=model, loss_mode="nll")
-
-    model.freeze_forward()
-    opt2 = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=cfg.lr, weight_decay=cfg.weight_decay)
-
-    print("[biflow_nf] Stage 2/2: reverse BiFlow alignment")
-    train_loop(ds, cfg, model_name="biflow_nf", steps=stage2_steps, log_every=log_every, model=model, optimizer=opt2, loss_mode="biflow")
 
     return model.eval()
 
@@ -657,12 +491,11 @@ def generate_continuation(
         cursor = 0
         while cursor < int(steps):
             cond_t = cond_seq[:, cursor, :] if cond_seq is not None else None
-            if isinstance(model, OTFlow):
-                if not hasattr(model, "sample_future"):
-                    raise RuntimeError("Non-autoregressive OTFlow requires sample_future(...).")
-                x_block = model.sample_future(x_hist, cond=cond_t, steps=nfe)
-            else:
-                raise RuntimeError("Non-autoregressive continuation is currently implemented for OTFlow only.")
+            if not isinstance(model, OTFlow):
+                raise RuntimeError("Continuation only supports OTFlow models.")
+            if not hasattr(model, "sample_future"):
+                raise RuntimeError("Non-autoregressive OTFlow requires sample_future(...).")
+            x_block = model.sample_future(x_hist, cond=cond_t, steps=nfe)
 
             take = min(int(prediction_horizon), int(steps) - int(cursor))
             block_slice = x_block[:, :take, :]
@@ -676,12 +509,9 @@ def generate_continuation(
     for k in range(steps):
         cond_t = cond_seq[:, k, :] if cond_seq is not None else None
 
-        if isinstance(model, (OTFlow, BiFlowLOB, DeepMarketTRADESBaseline)):
-            x_next = model.sample(x_hist, cond=cond_t, steps=nfe)
-        elif isinstance(model, (BiFlowNFLOB, DeepMarketCGANBaseline, TimeCausalVAEBaseline, TimeGANBaseline, KoVAEBaseline)):
-            x_next = model.sample(x_hist, cond=cond_t)
-        else:
-            raise RuntimeError("Unknown model type.")
+        if not isinstance(model, OTFlow):
+            raise RuntimeError("Continuation only supports OTFlow models.")
+        x_next = model.sample(x_hist, cond=cond_t, steps=nfe)
 
         out.append(x_next[:, None, :])
         hist_step = _append_context_features(x_next[:, None, :], cursor=k, take=1)
@@ -2218,7 +2048,6 @@ def run_ablation_grid(
     ablations: Sequence[Tuple[str, Dict[str, Any]]],
     model_name: str = "otflow",
     train_steps: int = 10_000,
-    stage2_steps_nf: Optional[int] = None,
     eval_horizon: int = 200,
     eval_nfe: int = 1,
     n_windows: int = 30,
@@ -2233,10 +2062,7 @@ def run_ablation_grid(
         cfg_i = clone_cfg_with_overrides(base_cfg, dict(overrides))
         print(f"\n=== Ablation: {name} | overrides={overrides} ===")
 
-        if model_name == "biflow_nf" and stage2_steps_nf is not None:
-            model = train_biflow_nf_two_stage(ds_train, cfg_i, stage1_steps=train_steps, stage2_steps=stage2_steps_nf, log_every=log_every)
-        else:
-            model = train_loop(ds_train, cfg_i, model_name=model_name, steps=train_steps, log_every=log_every)
+        model = train_loop(ds_train, cfg_i, model_name=model_name, steps=train_steps, log_every=log_every)
 
         res = eval_many_windows(
             ds_eval, model, cfg_i,
@@ -2335,7 +2161,6 @@ __all__ = [
     "crop_history_window",
     "sample_training_context_length",
     "train_loop",
-    "train_biflow_nf_two_stage",
     "generate_continuation",
     "eval_one_window",
     "eval_many_windows",
