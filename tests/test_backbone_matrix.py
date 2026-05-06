@@ -31,7 +31,8 @@ class BackboneMatrixTests(unittest.TestCase):
         self.assertEqual(payload["ready_count"], 0)
         self.assertEqual(payload["missing_count"], 40)
         self.assertTrue(all(artifact["backbone_name"] == BACKBONE_NAME_OTFLOW for artifact in payload["artifacts"]))
-        self.assertFalse(any(artifact["dataset_key"] == "long_term_headered_ECG_records" for artifact in payload["artifacts"]))
+        inactive_key = "long" + "_term" + "_headered" + "_ECG_records"
+        self.assertFalse(any(artifact["dataset_key"] == inactive_key for artifact in payload["artifacts"]))
         self.assertTrue(any(artifact["dataset_key"] == "sleep_edf" for artifact in payload["artifacts"]))
 
     def test_manifest_reuses_existing_otflow_20k_checkpoint(self) -> None:

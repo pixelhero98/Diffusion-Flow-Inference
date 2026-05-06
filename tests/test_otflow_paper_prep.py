@@ -67,6 +67,8 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
     def test_public_source_surface_excludes_local_and_cluster_artifacts(self) -> None:
         self.assertFalse((PROJECT_ROOT / "code").exists())
         self.assertFalse((PROJECT_ROOT / "legacy").exists())
+        self.assertFalse((PROJECT_ROOT / "ops").exists())
+        self.assertFalse((PROJECT_ROOT / "lesson.md").exists())
 
 
 if __name__ == "__main__":

@@ -13,12 +13,9 @@ import numpy as np
 
 from diffusion_flow_inference.datasets.experiment_plan import CANONICAL_FORECAST_PAPER_DATASETS, CANONICAL_LOB_PAPER_DATASETS, experiment_plan_by_key
 from diffusion_flow_inference.datasets.medical_datasets import (
-    LONG_TERM_HEADERED_ECG_DATASET_KEY,
     SLEEP_EDF_DATASET_KEY,
-    default_long_term_headered_ecg_manifest_path,
     default_sleep_edf_data_path,
     default_sleep_edf_metadata_path,
-    prepare_long_term_headered_ecg_dataset,
     prepare_sleep_edf_dataset,
 )
 from diffusion_flow_inference.datasets.monash_datasets import (
@@ -323,87 +320,6 @@ def audit_monash_dataset(dataset_root: str | Path, dataset_key: str) -> Dict[str
     return payload
 
 
-def audit_long_term_headered_ecg_dataset(dataset_root: str | Path) -> Dict[str, Any]:
-    manifest_path = default_long_term_headered_ecg_manifest_path(dataset_root)
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    else:
-        try:
-            manifest = prepare_long_term_headered_ecg_dataset(
-                dataset_root,
-                history_len=2000,
-                horizon=1000,
-            )
-        except Exception:
-            return {
-                "benchmark_family": "forecast_extrapolation",
-                "dataset_key": LONG_TERM_HEADERED_ECG_DATASET_KEY,
-                "display_name": "Long-Term Headered ECG Records",
-                "audit_version": 1,
-                "status": "missing_source",
-                "frequency": "250_hz",
-                "frequency_seconds": 1.0 / 250.0,
-                "granularity_bucket": "very_fine",
-                "official_horizon": 1000,
-                "context_length": 2000,
-                "n_series": 0,
-                "series_length": {"min": 0, "median": 0, "max": 0, "equal_length_header": False, "equal_length_empirical": False},
-                "missingness": {"header_missing": False, "missing_rate": 0.0, "missing_values": 0, "total_values": 0},
-                "regularity": {"regular_grid": True, "label": "high", "reason": "WFDB headered ECG samples are uniformly sampled at 250 Hz."},
-                "stationarity": {
-                    "raw_level": {"mean_score": float("nan"), "label": "insufficient", "n_series": 0},
-                    "first_difference": {"mean_score": float("nan"), "label": "insufficient", "n_series": 0},
-                    "overall": {"mean_score": float("nan"), "label": "insufficient"},
-                },
-                "sampled_series_count": 0,
-                "source_manifest_path": str(manifest_path),
-            }
-
-    lengths = [int(row["total_length"]) for row in manifest.get("series_specs", [])]
-    payload = {
-        "benchmark_family": "forecast_extrapolation",
-        "dataset_key": LONG_TERM_HEADERED_ECG_DATASET_KEY,
-        "display_name": "Long-Term Headered ECG Records",
-        "audit_version": 1,
-        "frequency": "250_hz",
-        "frequency_seconds": 1.0 / 250.0,
-        "granularity_bucket": "very_fine",
-        "official_horizon": 1000,
-        "context_length": 2000,
-        "n_series": int(manifest.get("n_series_used", 0)),
-        "series_length": {
-            "min": int(min(lengths)) if lengths else 0,
-            "median": int(np.median(np.asarray(lengths, dtype=np.int64))) if lengths else 0,
-            "max": int(max(lengths)) if lengths else 0,
-            "equal_length_header": bool(len(set(lengths)) == 1) if lengths else False,
-            "equal_length_empirical": bool(len(set(lengths)) == 1) if lengths else False,
-        },
-        "missingness": {
-            "header_missing": False,
-            "missing_rate": 0.0,
-            "missing_values": int(manifest.get("n_records_missing_dat", 0)),
-            "total_values": int(sum(lengths)) if lengths else 0,
-        },
-        "regularity": {
-            "regular_grid": True,
-            "label": "high",
-            "reason": "WFDB headered ECG samples are uniformly sampled at 250 Hz.",
-        },
-        "stationarity": {
-            "raw_level": {"mean_score": float("nan"), "label": "medium", "n_series": min(16, int(manifest.get("n_series_used", 0)))},
-            "first_difference": {"mean_score": float("nan"), "label": "high", "n_series": min(16, int(manifest.get("n_series_used", 0)))},
-            "overall": {"mean_score": float("nan"), "label": "medium"},
-        },
-        "sampled_series_count": min(16, int(manifest.get("n_series_used", 0))),
-        "source_manifest_path": str(manifest_path),
-    }
-    default_audit_path(dataset_root, LONG_TERM_HEADERED_ECG_DATASET_KEY).write_text(
-        json.dumps(payload, indent=2),
-        encoding="utf-8",
-    )
-    return payload
-
-
 def _lob_data_path(dataset_key: str, cli_args: argparse.Namespace) -> str:
     if str(dataset_key) == "cryptos":
         return str(getattr(cli_args, "cryptos_path", ""))
@@ -684,12 +600,7 @@ def run_dataset_audit(cli_args: argparse.Namespace) -> Dict[str, Any]:
     out_root = Path(str(cli_args.out_root)).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
-    forecast_rows = []
-    for key in _parse_csv(cli_args.forecast_datasets):
-        if str(key) == LONG_TERM_HEADERED_ECG_DATASET_KEY:
-            forecast_rows.append(audit_long_term_headered_ecg_dataset(dataset_root))
-        else:
-            forecast_rows.append(audit_monash_dataset(dataset_root, key))
+    forecast_rows = [audit_monash_dataset(dataset_root, key) for key in _parse_csv(cli_args.forecast_datasets)]
     lob_rows = []
     for key in _parse_csv(cli_args.lob_datasets):
         if str(key) == SLEEP_EDF_DATASET_KEY:

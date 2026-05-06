@@ -53,6 +53,11 @@ class OTFlowOnlySourceSurfaceTests(unittest.TestCase):
             "timegan" + "_",
             "cgan" + "_",
             "nf" + "config",
+            "long" + "_term" + "_headered",
+            "headered" + "_ecg",
+            "wf" + "db",
+            "lazy" + "ecg",
+            "ecg" + "_prep_stub",
         )
         offenders: list[str] = []
         for path in _tracked_paths():

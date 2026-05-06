@@ -9,9 +9,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from diffusion_flow_inference.datasets.experiment_plan import CANONICAL_FORECAST_PAPER_DATASETS, CANONICAL_LOB_PAPER_DATASETS
 from diffusion_flow_inference.datasets.medical_constants import (
-    LONG_TERM_HEADERED_ECG_DATASET_KEY,
     SLEEP_EDF_DATASET_KEY,
-    default_long_term_headered_ecg_manifest_path,
     default_sleep_edf_data_path,
 )
 from diffusion_flow_inference.common.paths import project_backbone_matrix_root as default_project_backbone_matrix_root, project_data_root, project_outputs_root, project_paper_dataset_root
@@ -630,7 +628,7 @@ def build_runtime_probe(
     resolved_dataset_root = Path(dataset_root or project_paper_dataset_root()).resolve()
     resolved_sleep_path = Path(sleep_edf_path or default_sleep_edf_data_path()).resolve()
     monash_root = resolved_dataset_root / "monash"
-    import_names = ("numpy", "torch", "wfdb", "pyedflib")
+    import_names = ("numpy", "torch", "pyedflib")
     imports = {
         name: bool(importlib.util.find_spec(name) is not None)
         for name in import_names
@@ -638,11 +636,9 @@ def build_runtime_probe(
     forecast_dataset_presence = {
         str(dataset_key): bool((monash_root / str(dataset_key) / "manifest.json").exists())
         for dataset_key in CANONICAL_FORECAST_PAPER_DATASETS
-        if str(dataset_key) != LONG_TERM_HEADERED_ECG_DATASET_KEY
     }
     dataset_presence = {
         "monash_manifests": forecast_dataset_presence,
-        LONG_TERM_HEADERED_ECG_DATASET_KEY: bool(default_long_term_headered_ecg_manifest_path(resolved_dataset_root).exists()),
         SLEEP_EDF_DATASET_KEY: bool(resolved_sleep_path.exists()),
         "cryptos_npz": bool((project_data_root() / "cryptos_binance_spot_monthly_1s_l10.npz").exists()),
         "es_mbp_10_npz": bool((project_data_root() / "es_mbp_10.npz").exists()),
@@ -653,7 +649,6 @@ def build_runtime_probe(
         "imports": imports,
         "dataset_presence": dataset_presence,
     }
-
 
 def build_backbone_readiness_audit(
     *,

@@ -14,5 +14,4 @@ dependencies:
   - matplotlib>=3.8,<4
   - pytorch=2.10.*
   - pip:
-      - wfdb>=4.1
-      - pyedflib>=0.1.38
+      -       - pyedflib>=0.1.38

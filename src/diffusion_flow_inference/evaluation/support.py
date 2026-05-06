@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import math
 import os
@@ -33,11 +32,7 @@ from diffusion_flow_inference.backbones.training.registry import (
 )
 from diffusion_flow_inference.datasets.experiment_plan import CANONICAL_FORECAST_PAPER_DATASETS, CANONICAL_LOB_PAPER_DATASETS, experiment_plan_by_key
 from diffusion_flow_inference.datasets.forecast_data import build_monash_forecast_splits
-from diffusion_flow_inference.datasets.medical_datasets import (
-    LONG_TERM_HEADERED_ECG_DATASET_KEY,
-    SLEEP_EDF_DATASET_KEY,
-    build_long_term_headered_ecg_forecast_splits,
-)
+from diffusion_flow_inference.datasets.medical_datasets import SLEEP_EDF_DATASET_KEY
 from diffusion_flow_inference.backbones.settings.model import OTFlow
 from diffusion_flow_inference.common.paths import (
     default_cryptos_data_path,
@@ -235,11 +230,6 @@ def validate_execution_preflight(cli_args: argparse.Namespace) -> None:
                 "Missing shared checkpoints for the selected datasets. "
                 f"Provide checkpoint-ready datasets or produce the missing checkpoints first: {missing_lines}"
             )
-    if LONG_TERM_HEADERED_ECG_DATASET_KEY in forecast_datasets and importlib.util.find_spec("wfdb") is None:
-        errors.append(
-            "wfdb is required for long_term_headered_ECG_records support. "
-            "Install wfdb in the execution environment or omit long_term_headered_ECG_records."
-        )
     if errors:
         raise RuntimeError("Execution preflight failed:\n- " + "\n- ".join(errors))
 
@@ -473,25 +463,15 @@ def load_forecast_checkpoint_splits(
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Forecast checkpoint not found: {ckpt_path}")
     model, cfg = load_checkpoint_model(ckpt_path, device=device)
-    if str(dataset) == LONG_TERM_HEADERED_ECG_DATASET_KEY:
-        splits = build_long_term_headered_ecg_forecast_splits(
-            dataset_root=dataset_root,
-            cfg=cfg,
-            history_len=int(cfg.history_len),
-            horizon=int(cfg.prediction_horizon),
-            stride_train=1,
-            include_time_features=bool(cfg.model.use_time_features or cfg.model.use_time_gaps),
-        )
-    else:
-        splits = build_monash_forecast_splits(
-            dataset_root=dataset_root,
-            dataset_key=str(dataset),
-            cfg=cfg,
-            history_len=int(cfg.history_len),
-            horizon=int(cfg.prediction_horizon),
-            stride_train=1,
-            include_time_features=bool(cfg.model.use_time_features or cfg.model.use_time_gaps),
-        )
+    splits = build_monash_forecast_splits(
+        dataset_root=dataset_root,
+        dataset_key=str(dataset),
+        cfg=cfg,
+        history_len=int(cfg.history_len),
+        horizon=int(cfg.prediction_horizon),
+        stride_train=1,
+        include_time_features=bool(cfg.model.use_time_features or cfg.model.use_time_gaps),
+    )
     return {
         "model": model,
         "cfg": cfg,

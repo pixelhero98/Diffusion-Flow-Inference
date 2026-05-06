@@ -514,7 +514,7 @@ def runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
 
     argv = [
         "--out_root",
-        str(DEFAULT_RESULTS_DIR / "_runner_unused"),
+        str(Path(args.rows_jsonl).resolve().parent / runner_context),
         "--forecast_datasets",
         ",".join(parse_csv(str(args.datasets))),
         "--lob_datasets",
@@ -538,7 +538,7 @@ def runner_lob_cli_args(args: argparse.Namespace) -> argparse.Namespace:
 
     argv = [
         "--out_root",
-        str(DEFAULT_LOB_RESULTS_DIR / "_runner_unused"),
+        str(Path(args.rows_jsonl).resolve().parent / runner_context),
         "--forecast_datasets",
         "",
         "--lob_datasets",

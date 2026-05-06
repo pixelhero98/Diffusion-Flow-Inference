@@ -95,21 +95,6 @@ def table_layout_to_dict(layout: TableLayout) -> Dict[str, Any]:
     return asdict(layout)
 
 
-def markdown_header_stub(layout: TableLayout) -> List[str]:
-    first_row = [layout.row_group_label, layout.schedule_label]
-    second_row = ["", ""]
-    divider = ["---", "---"]
-    for block in layout.metric_blocks:
-        first_row.extend([f"NFE={int(block.nfe)}"] + [""] * (len(block.metrics) - 1))
-        second_row.extend(list(block.metrics))
-        divider.extend(["---:"] * len(block.metrics))
-    return [
-        "| " + " | ".join(first_row) + " |",
-        "| " + " | ".join(second_row) + " |",
-        "| " + " | ".join(divider) + " |",
-    ]
-
-
 def _row_value(row: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in row and row.get(key) is not None:
@@ -191,6 +176,5 @@ __all__ = [
     "build_lob_appendix_table_layout",
     "build_lob_table_layout",
     "build_lob_pilot_table_layout",
-    "markdown_header_stub",
     "table_layout_to_dict",
 ]

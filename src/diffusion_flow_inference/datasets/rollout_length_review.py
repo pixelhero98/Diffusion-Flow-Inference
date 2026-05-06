@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from diffusion_flow_inference.datasets.dataset_audit import run_dataset_audit
-from diffusion_flow_inference.datasets.medical_datasets import LONG_TERM_HEADERED_ECG_DATASET_KEY, SLEEP_EDF_DATASET_KEY, default_sleep_edf_data_path
+from diffusion_flow_inference.datasets.medical_datasets import SLEEP_EDF_DATASET_KEY, default_sleep_edf_data_path
 from diffusion_flow_inference.datasets.monash_datasets import monash_paper_dataset_keys
 
 
@@ -25,7 +25,7 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--forecast_datasets",
         type=str,
-        default=",".join(list(monash_paper_dataset_keys()) + [LONG_TERM_HEADERED_ECG_DATASET_KEY]),
+        default=",".join(monash_paper_dataset_keys()),
     )
     ap.add_argument("--lob_datasets", type=str, default=f"cryptos,es_mbp_10,{SLEEP_EDF_DATASET_KEY}")
     ap.add_argument("--cryptos_path", type=str, default="")

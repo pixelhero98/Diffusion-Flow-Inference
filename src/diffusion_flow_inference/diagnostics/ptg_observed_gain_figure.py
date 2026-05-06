@@ -325,7 +325,7 @@ def _runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
     seeds = parse_int_csv(str(getattr(args, "seeds", ",".join(str(seed) for seed in DEFAULT_SEEDS))))
     argv = [
         "--out_root",
-        str(DEFAULT_RESULTS_DIR / "_collect_runner_unused"),
+        str(Path(args.rows_csv).resolve().parent / runner_context),
         "--forecast_datasets",
         ",".join(datasets),
         "--lob_datasets",

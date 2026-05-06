@@ -1179,7 +1179,7 @@ def build_dataset_splits_from_arrays(
         if cfg.cond_standardize:
             c_mu, c_sig = fit_standardizer(resolved_cond_raw_full[:train_end])
 
-        # keep cfg.cond_dim in sync (same behavior as the old builder)
+        # Keep cfg.cond_dim aligned with the resolved conditioning features.
         if getattr(cfg, "cond_dim", 0) <= 0:
             cfg.cond_dim = int(resolved_cond_raw_full.shape[1])
 
