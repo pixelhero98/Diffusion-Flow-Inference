@@ -40,6 +40,7 @@ from diffusion_flow_inference.diagnostics.signal_traces import (
     resolved_info_growth_scale,
 )
 from diffusion_flow_inference.backbones.training.train_val import (
+    _future_context_seq_for_window,
     _temporary_eval_seed,
     _get_dataset_item_by_t,
     _parse_batch,
@@ -223,42 +224,21 @@ def _append_rollout_context_features(
     if block_dim == target_dim:
         return block
     if block_dim > target_dim:
-        return block[..., :target_dim]
+        raise ValueError(f"Generated block dim {block_dim} exceeds history dim {target_dim}.")
 
     extra_dim = int(target_dim - block_dim)
     if future_context_seq is None:
-        extra = torch.zeros(
-            block.shape[0],
-            int(take),
-            extra_dim,
-            device=block.device,
-            dtype=block.dtype,
+        raise ValueError(
+            "future_context_seq is required because generated rollout blocks do not include "
+            f"the {extra_dim} extra history context feature(s)."
         )
-    else:
-        extra = future_context_seq[:, int(cursor) : int(cursor) + int(take), :].to(
-            device=block.device,
-            dtype=block.dtype,
-        )
-        if int(extra.shape[1]) < int(take):
-            pad = torch.zeros(
-                extra.shape[0],
-                int(take) - int(extra.shape[1]),
-                extra.shape[2],
-                device=extra.device,
-                dtype=extra.dtype,
-            )
-            extra = torch.cat([extra, pad], dim=1)
-        if int(extra.shape[-1]) < extra_dim:
-            pad = torch.zeros(
-                extra.shape[0],
-                extra.shape[1],
-                extra_dim - int(extra.shape[-1]),
-                device=extra.device,
-                dtype=extra.dtype,
-            )
-            extra = torch.cat([extra, pad], dim=-1)
-        elif int(extra.shape[-1]) > extra_dim:
-            extra = extra[..., :extra_dim]
+    extra = future_context_seq[:, int(cursor) : int(cursor) + int(take), :].to(
+        device=block.device,
+        dtype=block.dtype,
+    )
+    expected_shape = (int(block.shape[0]), int(take), int(extra_dim))
+    if tuple(extra.shape) != expected_shape:
+        raise ValueError(f"future_context_seq slice has shape {tuple(extra.shape)}, expected {expected_shape}.")
     return torch.cat([block, extra], dim=-1)
 
 
@@ -446,11 +426,15 @@ def _collect_rollout_diagnostics(
         cond_seq = None
         if ds.cond is not None:
             cond_seq = torch.from_numpy(ds.cond[int(t0) : int(t0) + int(horizon)]).to(cfg.device).float()[None, :, :]
-        future_context_seq = None
-        if hasattr(ds, "future_time_gap_features"):
-            future_context = ds.future_time_gap_features(int(t0), int(horizon))
-            if future_context is not None:
-                future_context_seq = future_context.to(cfg.device).float()[None, :, :]
+        future_context_seq = _future_context_seq_for_window(
+            ds,
+            int(t0),
+            int(horizon),
+            hist=hist_t,
+            model=model,
+            device=cfg.device,
+            dtype=hist_t.dtype,
+        )
 
         x_hist = crop_history_window(hist_t, context_len).clone()
         cursor = 0

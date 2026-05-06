@@ -594,6 +594,23 @@ def load_l2_npz(path: str) -> Dict[str, np.ndarray]:
     return out
 
 
+def _normalization_fit_end(
+    total_length: int,
+    *,
+    normalization_fit_end: Optional[int],
+    fit_full_timeline_stats: bool,
+) -> int:
+    total_length = int(total_length)
+    if total_length <= 0:
+        raise ValueError("Cannot fit normalization stats on an empty array.")
+    if bool(fit_full_timeline_stats):
+        return total_length
+    if normalization_fit_end is None:
+        normalization_fit_end = int(round(0.7 * float(total_length)))
+    fit_end = min(max(1, int(normalization_fit_end)), total_length)
+    return fit_end
+
+
 def _build_windowed_dataset(
     params_raw: np.ndarray,
     mids: np.ndarray,
@@ -601,11 +618,24 @@ def _build_windowed_dataset(
     stride: int,
     *,
     timestamps: Optional[np.ndarray] = None,
+    normalization_fit_end: Optional[int] = None,
+    fit_full_timeline_stats: bool = False,
 ) -> WindowedLOBParamsDataset:
-    """Build a windowed LOB dataset from one parameterized array bundle."""
+    """Build a windowed LOB dataset from one parameterized array bundle.
+
+    Normalization defaults to an early prefix so this helper is safe for
+    generic public use. Pass fit_full_timeline_stats=True only for purely
+    training-only synthetic experiments where leakage is irrelevant.
+    """
+    fit_end = _normalization_fit_end(
+        len(params_raw),
+        normalization_fit_end=normalization_fit_end,
+        fit_full_timeline_stats=fit_full_timeline_stats,
+    )
     # params
     if cfg.standardize:
-        params, mu, sig = standardize_params(params_raw)
+        mu, sig = fit_standardizer(params_raw[:fit_end])
+        params = apply_standardizer(params_raw, mu, sig)
     else:
         params, mu, sig = params_raw.astype(np.float32), None, None
 
@@ -615,7 +645,8 @@ def _build_windowed_dataset(
     if cfg.use_cond_features:
         cond_raw = build_cond_features(params_raw, mids, cfg)
         if cfg.cond_standardize:
-            cond, c_mu, c_sig = standardize_cond(cond_raw)
+            c_mu, c_sig = fit_standardizer(cond_raw[:fit_end])
+            cond = apply_standardizer(cond_raw, c_mu, c_sig)
         else:
             cond = cond_raw
 
@@ -630,7 +661,7 @@ def _build_windowed_dataset(
     if time_feature_mode != "none":
         time_gap_scale = _fit_time_gap_scale(
             None if timestamps is None else np.asarray(timestamps, dtype=np.int64),
-            train_end=len(params_raw),
+            train_end=fit_end,
             segment_ends=None,
         )
         time_features = _build_time_features(
@@ -833,11 +864,24 @@ def build_dataset_synthetic(
     length: int = DEFAULT_SYNTHETIC_LENGTH,
     seed: int = 0,
     stride: int = 1,
+    *,
+    normalization_fit_frac: float = 0.7,
+    fit_full_timeline_stats: bool = False,
 ) -> WindowedLOBParamsDataset:
     ask_p, ask_v, bid_p, bid_v = _generate_synthetic_l2(cfg.levels, length, seed, cfg.eps)
     fm = L2FeatureMap(cfg.levels, cfg.eps)
     params_raw, mids = fm.encode_sequence(ask_p, ask_v, bid_p, bid_v)
-    return _build_windowed_dataset(params_raw, mids, cfg, stride=stride)
+    if not np.isfinite(float(normalization_fit_frac)) or float(normalization_fit_frac) <= 0.0:
+        raise ValueError("normalization_fit_frac must be a finite positive fraction.")
+    fit_end = int(round(float(normalization_fit_frac) * float(len(params_raw))))
+    return _build_windowed_dataset(
+        params_raw,
+        mids,
+        cfg,
+        stride=stride,
+        normalization_fit_end=fit_end,
+        fit_full_timeline_stats=bool(fit_full_timeline_stats),
+    )
 
 
 # -----------------------------

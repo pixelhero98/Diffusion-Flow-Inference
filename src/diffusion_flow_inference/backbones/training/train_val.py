@@ -209,16 +209,77 @@ def _model_snapshot_dim(model: torch.nn.Module, fallback_dim: int) -> int:
     return int(getattr(model_cfg, "snapshot_dim", int(fallback_dim)))
 
 
-def _future_time_context_seq(ds, t0: int, horizon: int) -> Optional[torch.Tensor]:
+def _validate_future_context_features(
+    features: torch.Tensor,
+    *,
+    horizon: int,
+    expected_dim: Optional[int] = None,
+) -> torch.Tensor:
+    if not torch.is_tensor(features):
+        features = torch.as_tensor(features)
+    if features.dim() != 2:
+        raise ValueError(f"future context features must be rank-2 [steps, extra_dim], got {tuple(features.shape)}.")
+    expected_steps = int(horizon)
+    if int(features.shape[0]) != expected_steps:
+        raise ValueError(
+            "future context features must have exactly horizon rows; "
+            f"expected {expected_steps}, got {int(features.shape[0])}."
+        )
+    if expected_dim is not None and int(features.shape[1]) != int(expected_dim):
+        raise ValueError(
+            "future context features have the wrong feature dimension; "
+            f"expected {int(expected_dim)}, got {int(features.shape[1])}."
+        )
+    return features
+
+
+def _future_time_context_seq(
+    ds,
+    t0: int,
+    horizon: int,
+    *,
+    expected_dim: Optional[int] = None,
+) -> Optional[torch.Tensor]:
     if hasattr(ds, "future_time_features"):
         features = ds.future_time_features(int(t0), int(horizon))
         if features is not None:
-            return features
+            return _validate_future_context_features(features, horizon=int(horizon), expected_dim=expected_dim)
     if hasattr(ds, "future_time_gap_features"):
         features = ds.future_time_gap_features(int(t0), int(horizon))
         if features is not None:
-            return features
+            return _validate_future_context_features(features, horizon=int(horizon), expected_dim=expected_dim)
     return None
+
+
+def _future_context_seq_for_window(
+    ds,
+    t0: int,
+    horizon: int,
+    *,
+    hist: torch.Tensor,
+    model: torch.nn.Module,
+    device: Optional[torch.device] = None,
+    dtype: Optional[torch.dtype] = None,
+) -> Optional[torch.Tensor]:
+    if hist.dim() != 3:
+        raise ValueError(f"hist must be rank-3 [B, H, D], got {tuple(hist.shape)}.")
+    batch_size = int(hist.shape[0])
+    if batch_size != 1:
+        raise ValueError("_future_context_seq_for_window expects one rollout window at a time.")
+    snapshot_dim = _model_snapshot_dim(model, fallback_dim=int(hist.shape[-1]))
+    extra_dim = max(0, int(hist.shape[-1]) - int(snapshot_dim))
+    if extra_dim <= 0:
+        return None
+    features = _future_time_context_seq(ds, int(t0), int(horizon), expected_dim=extra_dim)
+    if features is None:
+        raise ValueError(
+            "future_context_seq is required because history includes extra context features "
+            f"(hist_dim={int(hist.shape[-1])}, snapshot_dim={int(snapshot_dim)}, extra_dim={int(extra_dim)})."
+        )
+    return features.to(
+        device=hist.device if device is None else device,
+        dtype=hist.dtype if dtype is None else dtype,
+    )[None, :, :]
 
 
 # -----------------------------
@@ -565,30 +626,30 @@ def generate_continuation(
 
     snapshot_dim = _model_snapshot_dim(model, fallback_dim=D)
     extra_dim = max(0, int(D) - int(snapshot_dim))
-    if extra_dim > 0 and future_context_seq is not None:
-        if future_context_seq.shape[0] != B or future_context_seq.shape[1] < int(steps) or future_context_seq.shape[2] != extra_dim:
+    if extra_dim > 0:
+        if future_context_seq is None:
             raise ValueError(
-                "future_context_seq must have shape [B, steps, context_extra_dim] "
-                f"with B={B}, steps>={int(steps)}, context_extra_dim={extra_dim}; "
+                "future_context_seq is required because history includes extra context features "
+                f"(hist_dim={int(D)}, snapshot_dim={int(snapshot_dim)}, extra_dim={int(extra_dim)})."
+            )
+        if tuple(future_context_seq.shape) != (int(B), int(steps), int(extra_dim)):
+            raise ValueError(
+                "future_context_seq must have exact shape [B, steps, context_extra_dim] "
+                f"with B={int(B)}, steps={int(steps)}, context_extra_dim={int(extra_dim)}; "
                 f"got {tuple(future_context_seq.shape)}."
             )
 
     def _append_context_features(block: torch.Tensor, cursor: int, take: int) -> torch.Tensor:
         if extra_dim <= 0:
             return block
-        if future_context_seq is None:
-            extra = torch.zeros(
-                block.shape[0],
-                int(take),
-                extra_dim,
-                device=block.device,
-                dtype=block.dtype,
-            )
-        else:
-            extra = future_context_seq[:, int(cursor) : int(cursor) + int(take), :].to(
-                device=block.device,
-                dtype=block.dtype,
-            )
+        assert future_context_seq is not None
+        extra = future_context_seq[:, int(cursor) : int(cursor) + int(take), :].to(
+            device=block.device,
+            dtype=block.dtype,
+        )
+        expected_shape = (int(block.shape[0]), int(take), int(extra_dim))
+        if tuple(extra.shape) != expected_shape:
+            raise ValueError(f"future_context_seq slice has shape {tuple(extra.shape)}, expected {expected_shape}.")
         return torch.cat([block, extra], dim=-1)
 
     prediction_horizon = _model_prediction_horizon(model)
@@ -1706,10 +1767,15 @@ def eval_one_window(
     if ds.cond is not None:
         cond_seq = torch.from_numpy(ds.cond[t0 : t0 + horizon]).to(cfg.device).float()[None, :, :]
 
-    future_context_seq = None
-    future_context = _future_time_context_seq(ds, int(t0), int(horizon))
-    if future_context is not None:
-        future_context_seq = future_context.to(cfg.device).float()[None, :, :]
+    future_context_seq = _future_context_seq_for_window(
+        ds,
+        int(t0),
+        int(horizon),
+        hist=hist,
+        model=model,
+        device=cfg.device,
+        dtype=hist.dtype,
+    )
 
     # Generate and time
     _torch_sync(cfg.device)
@@ -2080,10 +2146,15 @@ def benchmark_sampling_latency(
     cond_seq = None
     if ds.cond is not None:
         cond_seq = torch.from_numpy(ds.cond[t0 : t0 + horizon]).to(cfg.device).float()[None]
-    future_context_seq = None
-    future_context = _future_time_context_seq(ds, int(t0), int(horizon))
-    if future_context is not None:
-        future_context_seq = future_context.to(cfg.device).float()[None]
+    future_context_seq = _future_context_seq_for_window(
+        ds,
+        int(t0),
+        int(horizon),
+        hist=hist,
+        model=model,
+        device=cfg.device,
+        dtype=hist.dtype,
+    )
 
     for __ in range(max(0, warmup)):
         generate_continuation(model, hist, cond_seq, steps=horizon, nfe=nfe, future_context_seq=future_context_seq)

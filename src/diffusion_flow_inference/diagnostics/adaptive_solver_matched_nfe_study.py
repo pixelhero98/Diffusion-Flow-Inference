@@ -686,6 +686,7 @@ def collect_adaptive_lob_nfe_diagnostics(
     import torch
     from diffusion_flow_inference.diagnostics.adaptive_deterministic_refinement_followup import _append_rollout_context_features, _sample_eval_trace
     from diffusion_flow_inference.backbones.training.train_val import (
+        _future_context_seq_for_window,
         _get_dataset_item_by_t,
         _parse_batch,
         _temporary_eval_seed,
@@ -707,11 +708,15 @@ def collect_adaptive_lob_nfe_diagnostics(
         cond_seq = None
         if ds.cond is not None:
             cond_seq = torch.from_numpy(ds.cond[int(t0) : int(t0) + int(horizon)]).to(cfg.device).float()[None, :, :]
-        future_context_seq = None
-        if hasattr(ds, "future_time_gap_features"):
-            future_context = ds.future_time_gap_features(int(t0), int(horizon))
-            if future_context is not None:
-                future_context_seq = future_context.to(cfg.device).float()[None, :, :]
+        future_context_seq = _future_context_seq_for_window(
+            ds,
+            int(t0),
+            int(horizon),
+            hist=hist_t,
+            model=model,
+            device=cfg.device,
+            dtype=hist_t.dtype,
+        )
 
         x_hist = crop_history_window(hist_t, context_len).clone()
         cursor = 0
