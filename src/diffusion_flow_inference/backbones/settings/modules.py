@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 
 
 class MLP(nn.Module):
@@ -163,7 +163,7 @@ class TransformerFUBlock(nn.Module):
 
 
 class TransformerFUNet(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
         self.levels = cfg.data.levels

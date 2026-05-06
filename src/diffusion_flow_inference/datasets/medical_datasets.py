@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 import torch
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.datasets.lob_datasets import build_dataset_splits_from_arrays
 from diffusion_flow_inference.datasets.medical_constants import (
     DEFAULT_SLEEP_EDF_METADATA_NAME,
@@ -244,7 +244,7 @@ def prepare_sleep_edf_dataset(
 
 def build_dataset_splits_from_sleep_edf(
     path: str,
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     stride_train: int = SLEEP_EDF_EPOCH_SAMPLES,
     stride_eval: int = SLEEP_EDF_EPOCH_SAMPLES,

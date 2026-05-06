@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.backbones.settings.modules import MLP
 
 
@@ -31,7 +31,7 @@ class FourierEmbedding(nn.Module):
 
 
 class CondEmbedder(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
         self.t_emb = FourierEmbedding(hidden_dim)
@@ -51,7 +51,7 @@ class CondEmbedder(nn.Module):
 
 
 class LSTMContextEncoder(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.rnn = nn.LSTM(cfg.context_dim, cfg.model.hidden_dim, num_layers=1, batch_first=True)
 
@@ -77,7 +77,7 @@ class AttentionPool(nn.Module):
 
 
 class TransformerContextEncoder(nn.Module):
-    def __init__(self, cfg: LOBConfig, *, causal: Optional[bool] = None):
+    def __init__(self, cfg: Config, *, causal: Optional[bool] = None):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
         self.use_causal_mask = bool(cfg.model.ctx_causal if causal is None else causal)
@@ -115,7 +115,7 @@ class TransformerContextEncoder(nn.Module):
 
 
 class HybridContextEncoder(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
         kernel = max(1, int(cfg.model.ctx_local_kernel))
@@ -192,7 +192,7 @@ class HybridContextEncoder(nn.Module):
 
 
 class MultiScaleContextEncoder(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.base_encoder = TransformerContextEncoder(cfg)
         self.scales = (1, 5, 10)
@@ -213,7 +213,7 @@ class MultiScaleContextEncoder(nn.Module):
             multi_scale_tokens.append(proj(pooled_ctx))
         return torch.cat(multi_scale_tokens, dim=1), pooled_base
 
-def build_context_encoder(cfg: LOBConfig) -> nn.Module:
+def build_context_encoder(cfg: Config) -> nn.Module:
     name = cfg.model.ctx_encoder.lower()
     if name == "lstm":
         return LSTMContextEncoder(cfg)
@@ -227,7 +227,7 @@ def build_context_encoder(cfg: LOBConfig) -> nn.Module:
 
 
 class CrossAttentionConditioner(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
         self.q_proj = nn.Linear(hidden_dim, hidden_dim)
@@ -258,7 +258,7 @@ class ConditioningCache:
 
 
 class SharedConditioningBackbone(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
         self.context_encoder = build_context_encoder(cfg)

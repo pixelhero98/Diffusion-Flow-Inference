@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import torch
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.backbones.training.train_val import (
     _future_time_context_seq,
     generate_continuation,
@@ -76,7 +76,7 @@ class ContextFeedingTests(unittest.TestCase):
             )
 
     def test_single_windowed_dataset_uses_prefix_normalization_by_default(self):
-        cfg = LOBConfig(levels=1, token_dim=2, history_len=4, standardize=True)
+        cfg = Config(levels=1, token_dim=2, history_len=4, standardize=True)
         params = np.stack(
             [np.arange(20, dtype=np.float32), np.arange(20, dtype=np.float32) ** 2],
             axis=1,

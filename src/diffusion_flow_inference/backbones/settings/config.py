@@ -111,7 +111,7 @@ class SampleConfig:
 
 
 @dataclass(init=False)
-class LOBConfig:
+class Config:
     data: LOBDataConfig = field(default_factory=LOBDataConfig)
     model: SharedModelConfig = field(default_factory=SharedModelConfig)
     fm: FMConfig = field(default_factory=FMConfig)
@@ -142,7 +142,7 @@ class LOBConfig:
                 return getattr(section, name)
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
-    def apply_overrides(self, **flat_overrides: Any) -> "LOBConfig":
+    def apply_overrides(self, **flat_overrides: Any) -> "Config":
         for key, value in flat_overrides.items():
             matched = False
             for section_name in _CONFIG_SECTIONS:

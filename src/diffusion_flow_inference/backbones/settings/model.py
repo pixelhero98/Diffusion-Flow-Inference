@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
-from diffusion_flow_inference.backbones.settings.rectified_flow import RectifiedFlowLOB
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.rectified_flow import RectifiedFlow
+from diffusion_flow_inference.backbones.settings.config import Config
 
 
 def _solve_linear_assignment(cost: torch.Tensor) -> torch.Tensor:
@@ -66,9 +66,9 @@ def _solve_linear_assignment(cost: torch.Tensor) -> torch.Tensor:
     return assignment.to(device=cost.device)
 
 
-class OTFlow(RectifiedFlowLOB):
+class OTFlow(RectifiedFlow):
 
-    def __init__(self, cfg: LOBConfig):
+    def __init__(self, cfg: Config):
         super().__init__(cfg)
         self._last_sample_stats: Dict[str, Any] = {}
 

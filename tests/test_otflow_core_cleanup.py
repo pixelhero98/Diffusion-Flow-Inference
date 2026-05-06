@@ -6,15 +6,15 @@ from pathlib import Path
 
 import torch
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.evaluation.support import load_checkpoint_model
 from diffusion_flow_inference.backbones.settings.model import OTFlow
 
 
 class OTFlowCoreCleanupTest(unittest.TestCase):
-    def _cfg(self, *, use_minibatch_ot: bool = True, rollout_mode: str = "autoregressive") -> LOBConfig:
+    def _cfg(self, *, use_minibatch_ot: bool = True, rollout_mode: str = "autoregressive") -> Config:
         future_block_len = 2 if rollout_mode == "non_ar" else 1
-        cfg = LOBConfig(
+        cfg = Config(
             device=torch.device("cpu"),
             levels=2,
             history_len=4,

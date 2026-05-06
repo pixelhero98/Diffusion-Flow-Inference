@@ -26,7 +26,7 @@ from typing import Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.common.paths import project_data_root
 
 ArrayLike = Union[np.ndarray, torch.Tensor]
@@ -175,7 +175,7 @@ def standardize_cond(cond: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarr
     return apply_standardizer(cond, mu, sig), mu, sig
 
 
-def _future_horizon_from_cfg(cfg: LOBConfig) -> int:
+def _future_horizon_from_cfg(cfg: Config) -> int:
     required = 0
     rollout_mode = str(getattr(cfg.model, "rollout_mode", "autoregressive")).strip().lower()
     if rollout_mode == "non_ar":
@@ -183,7 +183,7 @@ def _future_horizon_from_cfg(cfg: LOBConfig) -> int:
     return int(max(0, required))
 
 
-def _time_feature_mode(cfg: LOBConfig) -> str:
+def _time_feature_mode(cfg: Config) -> str:
     if bool(getattr(cfg.model, "use_time_features", False)):
         return "gap_elapsed"
     if bool(getattr(cfg.model, "use_time_gaps", False)):
@@ -191,7 +191,7 @@ def _time_feature_mode(cfg: LOBConfig) -> str:
     return "none"
 
 
-def _use_time_features_enabled(cfg: LOBConfig) -> bool:
+def _use_time_features_enabled(cfg: Config) -> bool:
     return _time_feature_mode(cfg) != "none"
 
 
@@ -344,7 +344,7 @@ def _build_time_features(
 # -----------------------------
 # Derived conditioning features (from params + mids)
 # -----------------------------
-def build_cond_features(params_raw: np.ndarray, mids: np.ndarray, cfg: LOBConfig) -> np.ndarray:
+def build_cond_features(params_raw: np.ndarray, mids: np.ndarray, cfg: Config) -> np.ndarray:
     """Compute per-timestep conditioning features from raw params."""
     L = cfg.levels
     eps = cfg.eps
@@ -604,7 +604,7 @@ def _normalization_fit_end(
 def _build_windowed_dataset(
     params_raw: np.ndarray,
     mids: np.ndarray,
-    cfg: LOBConfig,
+    cfg: Config,
     stride: int,
     *,
     timestamps: Optional[np.ndarray] = None,
@@ -850,7 +850,7 @@ def _generate_synthetic_l2(
 
 
 def build_dataset_synthetic(
-    cfg: LOBConfig,
+    cfg: Config,
     length: int = DEFAULT_SYNTHETIC_LENGTH,
     seed: int = 0,
     stride: int = 1,
@@ -979,7 +979,7 @@ def _resolve_segment_split_bounds(
 def _make_windowed_dataset_from_arrays(
     params_full: np.ndarray,
     mids_full: np.ndarray,
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     stride: int,
     start_t: int,
@@ -1092,7 +1092,7 @@ def _make_windowed_dataset_from_arrays(
 def build_dataset_splits_from_arrays(
     params_raw: np.ndarray,
     mids: np.ndarray,
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     timestamps: Optional[np.ndarray] = None,
     cond_raw_full: Optional[np.ndarray] = None,
@@ -1113,7 +1113,7 @@ def build_dataset_splits_from_arrays(
     Parameters
     ----------
     params_raw, mids : full timeline arrays [T, D], [T]
-    cfg : LOBConfig
+    cfg : Config
     stride_train, stride_eval : int
         Often use denser train and sparser eval.
     train_frac/val_frac/test_frac OR train_end/val_end :
@@ -1290,7 +1290,7 @@ def build_dataset_splits_from_arrays(
 
 def build_dataset_splits_from_npz_l2(
     path: str,
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1350,7 +1350,7 @@ def default_optiver_npz_path() -> str:
 
 def build_dataset_splits_from_cryptos(
     path: str,
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1377,7 +1377,7 @@ def build_dataset_splits_from_cryptos(
 
 def build_dataset_splits_from_es_mbp_10(
     path: str,
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1404,7 +1404,7 @@ def build_dataset_splits_from_es_mbp_10(
 
 def build_dataset_splits_from_optiver(
     path: str,
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1430,7 +1430,7 @@ def build_dataset_splits_from_optiver(
 
 
 def build_dataset_splits_synthetic(
-    cfg: LOBConfig,
+    cfg: Config,
     length: int = DEFAULT_SYNTHETIC_LENGTH,
     seed: int = 0,
     *,

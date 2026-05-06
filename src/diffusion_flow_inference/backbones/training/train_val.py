@@ -23,7 +23,7 @@ import torch
 from torch.utils.data import DataLoader, RandomSampler
 from torch.optim.swa_utils import AveragedModel
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.backbones.settings.modules import EMAModel
 from diffusion_flow_inference.backbones.settings.model import OTFlow
 from diffusion_flow_inference.datasets.lob_datasets import L2FeatureMap, WindowedLOBParamsDataset, compute_basic_l2_metrics
@@ -108,12 +108,12 @@ def _torch_sync(device: torch.device):
         torch.cuda.synchronize(device)
 
 
-def _amp_enabled(cfg: LOBConfig, device: torch.device) -> bool:
+def _amp_enabled(cfg: Config, device: torch.device) -> bool:
     return bool(getattr(cfg.train, "use_amp", False)) and device.type == "cuda" and torch.cuda.is_available()
 
 
 @contextmanager
-def _autocast_context(cfg: LOBConfig, device: torch.device):
+def _autocast_context(cfg: Config, device: torch.device):
     if _amp_enabled(cfg, device):
         with torch.cuda.amp.autocast(dtype=torch.float16):
             yield
@@ -142,7 +142,7 @@ def _temporary_eval_seed(seed: int):
             torch.cuda.set_rng_state_all(cuda_states)
 
 
-def resolve_context_length(max_available: int, *, horizon: int, cfg: Optional[LOBConfig]) -> int:
+def resolve_context_length(max_available: int, *, horizon: int, cfg: Optional[Config]) -> int:
     max_available = max(1, int(max_available))
     if cfg is None or not bool(getattr(cfg, "adaptive_context", False)):
         return max_available
@@ -165,7 +165,7 @@ def crop_history_window(hist: torch.Tensor, context_len: int) -> torch.Tensor:
     raise ValueError(f"Unsupported history tensor rank: {hist.dim()}")
 
 
-def sample_training_context_length(max_available: int, cfg: Optional[LOBConfig]) -> int:
+def sample_training_context_length(max_available: int, cfg: Optional[Config]) -> int:
     max_available = max(1, int(max_available))
     if cfg is None or not bool(getattr(cfg, "train_variable_context", False)):
         return max_available
@@ -267,7 +267,7 @@ def _future_context_seq_for_window(
 # -----------------------------
 # Training
 # -----------------------------
-def _build_scheduler(opt: torch.optim.Optimizer, cfg: LOBConfig, total_steps: int):
+def _build_scheduler(opt: torch.optim.Optimizer, cfg: Config, total_steps: int):
     """Build an optional LR scheduler (warmup + cosine decay)."""
     schedule = getattr(cfg, "lr_schedule", "constant").lower()
     warmup = int(getattr(cfg, "lr_warmup_steps", 0))
@@ -292,7 +292,7 @@ def _normalize_model_name(model_name: str) -> str:
     return normalized
 
 
-def _build_model(model_name: str, cfg: LOBConfig, device: torch.device) -> torch.nn.Module:
+def _build_model(model_name: str, cfg: Config, device: torch.device) -> torch.nn.Module:
     _normalize_model_name(model_name)
     return OTFlow(cfg).to(device)
 
@@ -313,7 +313,7 @@ def _compute_training_loss(
 
 def train_loop(
     ds: WindowedLOBParamsDataset,
-    cfg: LOBConfig,
+    cfg: Config,
     model_name: str = "otflow",
     steps: int = 10_000,
     log_every: int = 200,
@@ -659,7 +659,7 @@ class _SmallMLP(torch.nn.Module):
         return self.net(x)
 
 
-def _downstream_device(cfg: LOBConfig) -> torch.device:
+def _downstream_device(cfg: Config) -> torch.device:
     device = getattr(cfg, "device", torch.device("cpu"))
     if isinstance(device, str):
         return torch.device(device)
@@ -1236,7 +1236,7 @@ def _compare_sleep_sequences(
 
 def _evaluate_generation_main_metrics(
     rows: Sequence[Dict[str, Any]],
-    cfg: LOBConfig,
+    cfg: Config,
     *,
     horizon: int,
     seed: int,
@@ -1567,7 +1567,7 @@ def _get_dataset_item_by_t(ds: WindowedLOBParamsDataset, t0: int):
 def eval_one_window(
     ds: WindowedLOBParamsDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: Config,
     horizon: int = 200,
     nfe: int = 1,
     seed: int = 0,
@@ -1785,7 +1785,7 @@ def _wrap_scalar_as_mean_std(value: float) -> Dict[str, float]:
 def eval_many_windows(
     ds: WindowedLOBParamsDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: Config,
     horizon: int = 200,
     nfe: int = 1,
     n_windows: int = 50,
@@ -1936,7 +1936,7 @@ def eval_many_windows(
 def eval_rollout_horizons(
     ds: WindowedLOBParamsDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: Config,
     horizons: Sequence[int] = (1, 10, 50, 100, 200),
     nfe: int = 1,
     n_windows: int = 50,
@@ -1955,7 +1955,7 @@ def eval_rollout_horizons(
 def benchmark_sampling_latency(
     ds: WindowedLOBParamsDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: Config,
     horizon: int = 200,
     nfe: int = 1,
     n_trials: int = 20,
@@ -2016,7 +2016,7 @@ def benchmark_sampling_latency(
 def eval_speed_quality_nfe(
     ds: WindowedLOBParamsDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: Config,
     nfe_list: Sequence[int] = (1, 2, 4, 8, 16, 32),
     horizon: int = 200,
     n_windows: int = 30,
@@ -2034,7 +2034,7 @@ def eval_speed_quality_nfe(
 # -----------------------------
 # Ablations (C)
 # -----------------------------
-def clone_cfg_with_overrides(cfg: LOBConfig, overrides: Dict[str, Any]) -> LOBConfig:
+def clone_cfg_with_overrides(cfg: Config, overrides: Dict[str, Any]) -> Config:
     cfg2 = copy.deepcopy(cfg)
     cfg2.apply_overrides(**overrides)
     return cfg2
@@ -2043,7 +2043,7 @@ def clone_cfg_with_overrides(cfg: LOBConfig, overrides: Dict[str, Any]) -> LOBCo
 def run_ablation_grid(
     ds_train: WindowedLOBParamsDataset,
     ds_eval: WindowedLOBParamsDataset,
-    base_cfg: LOBConfig,
+    base_cfg: Config,
     ablations: Sequence[Tuple[str, Dict[str, Any]]],
     model_name: str = "otflow",
     train_steps: int = 10_000,
@@ -2115,7 +2115,7 @@ def save_qualitative_window_npz(
     save_path: str,
     ds: WindowedLOBParamsDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: Config,
     horizon: int = 200,
     nfe: int = 1,
     seed: int = 0,

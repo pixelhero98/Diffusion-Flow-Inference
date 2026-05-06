@@ -7,12 +7,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from diffusion_flow_inference.backbones.settings.conditioning import ConditioningCache, SharedConditioningBackbone
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.backbones.settings.modules import TransformerFUNet, build_mlp
 
 
-class RectifiedFlowLOB(nn.Module):
-    def __init__(self, cfg: LOBConfig):
+class RectifiedFlow(nn.Module):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
         state_dim = cfg.sample_state_dim
@@ -106,4 +106,4 @@ class RectifiedFlowLOB(nn.Module):
         return x
 
 
-__all__ = ["RectifiedFlowLOB"]
+__all__ = ["RectifiedFlow"]

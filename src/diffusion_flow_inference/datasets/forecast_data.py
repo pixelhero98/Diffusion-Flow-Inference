@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from diffusion_flow_inference.backbones.settings.config import LOBConfig
+from diffusion_flow_inference.backbones.settings.config import Config
 from diffusion_flow_inference.datasets.monash_datasets import (
     default_manifest_path,
     default_source_dir,
@@ -339,7 +339,7 @@ def build_monash_forecast_splits(
     *,
     dataset_root: str | Path,
     dataset_key: str,
-    cfg: LOBConfig,
+    cfg: Config,
     history_len: int,
     horizon: int,
     stride_train: int = 1,

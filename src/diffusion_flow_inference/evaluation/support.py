@@ -438,11 +438,11 @@ def build_lob_dataset_args_from_cfg(
 
 
 def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow, Any]:
-    from diffusion_flow_inference.backbones.settings.config import LOBConfig
+    from diffusion_flow_inference.backbones.settings.config import Config
 
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     cfg_dict = ckpt["cfg"]
-    cfg = LOBConfig()
+    cfg = Config()
     section_types = {
         "data": type(cfg.data),
         "model": type(cfg.model),
