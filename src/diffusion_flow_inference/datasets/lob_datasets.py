@@ -180,16 +180,6 @@ def _future_horizon_from_cfg(cfg: LOBConfig) -> int:
     rollout_mode = str(getattr(cfg.model, "rollout_mode", "autoregressive")).strip().lower()
     if rollout_mode == "non_ar":
         required = max(required, max(0, int(getattr(cfg.model, "future_block_len", 1)) - 1))
-    if float(getattr(cfg.fm, "lambda_causal_ot", 0.0)) > 0.0:
-        required = max(required, int(getattr(cfg.fm, "causal_ot_horizon", 0)))
-    if float(getattr(cfg.fm, "lambda_current_match", 0.0)) > 0.0:
-        required = max(required, int(getattr(cfg.fm, "current_match_horizon", 0)))
-    if float(getattr(cfg.fm, "lambda_path_fm", 0.0)) > 0.0:
-        required = max(required, int(getattr(cfg.fm, "path_fm_horizon", 0)))
-    if float(getattr(cfg.fm, "lambda_mi", 0.0)) > 0.0:
-        required = max(required, int(getattr(cfg.fm, "mi_horizon", 0)))
-    if float(getattr(cfg.fm, "lambda_mi_critic", 0.0)) > 0.0:
-        required = max(required, int(getattr(cfg.fm, "mi_critic_horizon", 0)))
     return int(max(0, required))
 
 

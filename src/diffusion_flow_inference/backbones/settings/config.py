@@ -38,7 +38,6 @@ class SharedModelConfig:
     ctx_causal: bool = True
     ctx_local_kernel: int = 5
     ctx_pool_scales: Tuple[int, ...] = (4, 16)
-    field_parameterization: str = "instantaneous"
     ctx_heads: int = 4
     ctx_layers: int = 2
     adaptive_context: bool = False
@@ -60,39 +59,7 @@ class SharedModelConfig:
 
 @dataclass
 class FMConfig:
-    lambda_mean: float = 1.0
-    lambda_consistency: float = 0.0
-    lambda_imbalance: float = 0.0
-    lambda_causal_ot: float = 0.0
-    lambda_current_match: float = 0.0
-    lambda_path_fm: float = 0.0
-    lambda_mi: float = 0.0
-    lambda_mi_critic: float = 0.0
     use_minibatch_ot: bool = True
-    consistency_steps: int = 32
-    causal_ot_horizon: int = 0
-    causal_ot_history_weight: float = 0.25
-    causal_ot_k_neighbors: int = 0
-    causal_ot_rollout_nfe: int = 1
-    current_match_horizon: int = 0
-    current_match_k_neighbors: int = 8
-    current_match_rollout_nfe: int = 1
-    current_match_var_eps: float = 1e-3
-    current_match_global_shrink: float = 0.5
-    current_match_huber_delta: float = 1.0
-    current_match_pair_mode: str = "selected"
-    path_fm_horizon: int = 0
-    path_fm_history_weight: float = 0.25
-    path_fm_k_neighbors: int = 8
-    mi_horizon: int = 0
-    mi_temperature: float = 0.2
-    mi_rollout_nfe: int = 1
-    mi_critic_horizon: int = 0
-    mi_critic_rollout_nfe: int = 1
-    meanflow_data_proportion: float = 0.75
-    meanflow_norm_p: float = 1.0
-    meanflow_norm_eps: float = 0.01
-
 
 @dataclass
 class TrainConfig:

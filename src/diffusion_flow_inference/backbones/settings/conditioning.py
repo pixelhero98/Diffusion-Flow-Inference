@@ -36,8 +36,6 @@ class CondEmbedder(nn.Module):
         hidden_dim = cfg.model.hidden_dim
         self.t_emb = FourierEmbedding(hidden_dim)
         self.t_mlp = MLP(hidden_dim, hidden_dim, hidden_dim, dropout=0.0)
-        self.h_emb = FourierEmbedding(hidden_dim)
-        self.h_mlp = MLP(hidden_dim, hidden_dim, hidden_dim, dropout=0.0)
         if cfg.model.cond_dim > 0:
             self.cond_mlp = MLP(cfg.model.cond_dim, hidden_dim, hidden_dim, dropout=0.0)
         else:
@@ -45,11 +43,6 @@ class CondEmbedder(nn.Module):
 
     def embed_t(self, t: torch.Tensor) -> torch.Tensor:
         return self.t_mlp(self.t_emb(t))
-
-    def embed_h(self, h: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-        if h is None:
-            return None
-        return self.h_mlp(self.h_emb(h))
 
     def embed_cond(self, cond: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
         if self.cond_mlp is None or cond is None:
@@ -254,7 +247,6 @@ class ConditioningState:
     t_emb: torch.Tensor
     cond_emb: Optional[torch.Tensor]
     ctx_tokens: torch.Tensor
-    h_emb: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -286,7 +278,6 @@ class SharedConditioningBackbone(nn.Module):
         hist: torch.Tensor,
         x_ref: torch.Tensor,
         t: Optional[torch.Tensor] = None,
-        h: Optional[torch.Tensor] = None,
         cond: Optional[torch.Tensor] = None,
         force_zero_t: bool = False,
         cache: Optional[ConditioningCache] = None,
@@ -297,11 +288,8 @@ class SharedConditioningBackbone(nn.Module):
         if t is None or force_zero_t:
             t = torch.zeros(x_ref.shape[0], 1, device=x_ref.device)
         t_emb = self.conditioner.embed_t(t)
-        h_emb = self.conditioner.embed_h(h)
         cond_emb = cache.cond_emb if (cache.cond_emb is not None or cond is None) else self.conditioner.embed_cond(cond)
         query = self.x_proj(x_ref) + t_emb
-        if h_emb is not None:
-            query = query + h_emb
         if cond_emb is not None:
             query = query + cond_emb
         local_ctx = self.cross(query, ctx_tokens)
@@ -314,7 +302,6 @@ class SharedConditioningBackbone(nn.Module):
             t_emb=t_emb,
             cond_emb=cond_emb,
             ctx_tokens=ctx_tokens,
-            h_emb=h_emb,
         )
 
     def precompute(

@@ -5,6 +5,7 @@ import json
 import math
 import os
 import time
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -65,6 +66,48 @@ LOB_PHYSICAL_BATCH_SIZE: Dict[str, int] = {
     "es_mbp_10": 8,
     SLEEP_EDF_DATASET_KEY: 2,
 }
+
+
+_DEPRECATED_CFG_KEYS_BY_SECTION: Dict[str, set[str]] = {
+    "model": {"field_parameterization"},
+    "fm": {
+        "lambda_mean",
+        "lambda_consistency",
+        "lambda_imbalance",
+        "lambda_causal_ot",
+        "lambda_current_match",
+        "lambda_path_fm",
+        "lambda_mi",
+        "lambda_mi_critic",
+        "consistency_steps",
+        "causal_ot_horizon",
+        "causal_ot_history_weight",
+        "causal_ot_k_neighbors",
+        "causal_ot_rollout_nfe",
+        "current_match_horizon",
+        "current_match_k_neighbors",
+        "current_match_rollout_nfe",
+        "current_match_var_eps",
+        "current_match_global_shrink",
+        "current_match_huber_delta",
+        "current_match_pair_mode",
+        "path_fm_horizon",
+        "path_fm_history_weight",
+        "path_fm_k_neighbors",
+        "mi_horizon",
+        "mi_temperature",
+        "mi_rollout_nfe",
+        "mi_critic_horizon",
+        "mi_critic_rollout_nfe",
+        "meanflow_data_proportion",
+        "meanflow_norm_p",
+        "meanflow_norm_eps",
+    },
+}
+
+_DEPRECATED_STATE_KEY_PREFIXES: Tuple[str, ...] = (
+    "backbone.conditioner.h_mlp.",
+)
 
 DEFAULT_FORECAST_DATASETS = tuple(CANONICAL_FORECAST_PAPER_DATASETS)
 DEFAULT_LOB_DATASETS = tuple(CANONICAL_LOB_PAPER_DATASETS)
@@ -356,7 +399,6 @@ def build_lob_dataset_args_from_cfg(
         ctx_pool_scales=str(preset["ctx_pool_scales"]),
         use_time_features=bool(preset.get("use_time_features", preset.get("use_time_gaps", False))),
         use_time_gaps=bool(preset.get("use_time_gaps", False)),
-        field_parameterization="instantaneous",
         fu_net_type=str(field_network_type),
         fu_net_layers=int(cli_args.fu_net_layers),
         fu_net_heads=int(cli_args.fu_net_heads),
@@ -369,13 +411,6 @@ def build_lob_dataset_args_from_cfg(
         train_variable_context=False,
         train_context_min=None,
         train_context_max=None,
-        lambda_consistency=0.0,
-        lambda_imbalance=0.0,
-        lambda_causal_ot=0.0,
-        lambda_current_match=0.0,
-        lambda_path_fm=0.0,
-        lambda_mi=0.0,
-        lambda_mi_critic=0.0,
         use_minibatch_ot=True,
         solver="euler",
         use_amp=True,
@@ -419,13 +454,30 @@ def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow
         section_values = dict(cfg_dict.get(section_name, {}))
         if section_name == "train":
             section_values["device"] = device
+        valid_keys = {field.name for field in fields(cls)}
+        unknown_keys = set(section_values) - valid_keys
+        deprecated_keys = _DEPRECATED_CFG_KEYS_BY_SECTION.get(section_name, set())
+        unexpected_keys = sorted(unknown_keys - deprecated_keys)
+        if unexpected_keys:
+            raise TypeError(
+                f"Checkpoint config section {section_name!r} contains unsupported keys: {unexpected_keys}"
+            )
+        for key in unknown_keys:
+            section_values.pop(key, None)
         setattr(cfg, section_name, cls(**section_values))
     cfg.train.device = device
 
     model = OTFlow(cfg).to(device)
-    model.load_state_dict(ckpt["model_state"])
-    if ckpt.get("params_mean") is not None and ckpt.get("params_std") is not None:
-        model.set_param_normalizer(ckpt["params_mean"], ckpt["params_std"])
+    model_state = dict(ckpt["model_state"])
+    for key in list(model_state):
+        if key.startswith(_DEPRECATED_STATE_KEY_PREFIXES):
+            model_state.pop(key)
+    load_result = model.load_state_dict(model_state, strict=False)
+    if load_result.missing_keys or load_result.unexpected_keys:
+        raise RuntimeError(
+            "Checkpoint model_state is incompatible after filtering deprecated OTFlow keys: "
+            f"missing={load_result.missing_keys}, unexpected={load_result.unexpected_keys}"
+        )
     model.eval()
     return model, cfg
 

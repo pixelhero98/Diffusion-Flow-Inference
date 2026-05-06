@@ -18,17 +18,12 @@ class RectifiedFlowLOB(nn.Module):
         state_dim = cfg.sample_state_dim
         hidden_dim = cfg.model.hidden_dim
         cond_dim = hidden_dim if cfg.model.cond_dim > 0 else 0
-        self.field_parameterization = str(cfg.model.field_parameterization).lower()
-        if self.field_parameterization not in {"instantaneous", "average"}:
-            raise ValueError(f"Unknown field_parameterization={cfg.model.field_parameterization}")
-        self.uses_step_conditioning = self.field_parameterization == "average"
         self.backbone = SharedConditioningBackbone(cfg)
         self.fu_net_type = str(cfg.model.fu_net_type).lower()
-        step_cond_dim = hidden_dim if self.uses_step_conditioning else 0
         base_cond_dim = 3 * hidden_dim
 
         if self.fu_net_type == "transformer":
-            cond_in_dim = base_cond_dim + step_cond_dim + cond_dim
+            cond_in_dim = base_cond_dim + cond_dim
             self.v_cond_proj = build_mlp(
                 cond_in_dim,
                 hidden_dim,
@@ -39,7 +34,7 @@ class RectifiedFlowLOB(nn.Module):
             self.v_net = TransformerFUNet(cfg)
         elif self.fu_net_type in {"mlp", "resmlp"}:
             use_res = cfg.model.use_res_mlp if self.fu_net_type == "resmlp" else False
-            in_dim = state_dim + base_cond_dim + step_cond_dim + cond_dim
+            in_dim = state_dim + base_cond_dim + cond_dim
             self.v_cond_proj = None
             self.v_net = build_mlp(
                 in_dim,
@@ -53,8 +48,6 @@ class RectifiedFlowLOB(nn.Module):
 
     def _conditioning_parts(self, cond_state) -> List[torch.Tensor]:
         parts = [cond_state.ctx, cond_state.ctx_summary, cond_state.t_emb]
-        if cond_state.h_emb is not None:
-            parts.append(cond_state.h_emb)
         if cond_state.cond_emb is not None:
             parts.append(cond_state.cond_emb)
         return parts
@@ -65,17 +58,12 @@ class RectifiedFlowLOB(nn.Module):
         t: torch.Tensor,
         hist: torch.Tensor,
         cond: Optional[torch.Tensor] = None,
-        h: Optional[torch.Tensor] = None,
         conditioning_cache: Optional[ConditioningCache] = None,
     ) -> torch.Tensor:
-        step_h = None
-        if self.uses_step_conditioning:
-            step_h = torch.zeros_like(t) if h is None else h
         cond_state = self.backbone.build_conditioning(
             hist=hist,
             x_ref=x_t,
             t=t,
-            h=step_h,
             cond=cond,
             cache=conditioning_cache,
         )
@@ -94,18 +82,7 @@ class RectifiedFlowLOB(nn.Module):
         cond: Optional[torch.Tensor] = None,
         conditioning_cache: Optional[ConditioningCache] = None,
     ) -> torch.Tensor:
-        return self._field_forward(x_t, t, hist, cond=cond, h=None, conditioning_cache=conditioning_cache)
-
-    def u_forward(
-        self,
-        x_t: torch.Tensor,
-        t: torch.Tensor,
-        hist: torch.Tensor,
-        h: torch.Tensor,
-        cond: Optional[torch.Tensor] = None,
-        conditioning_cache: Optional[ConditioningCache] = None,
-    ) -> torch.Tensor:
-        return self._field_forward(x_t, t, hist, cond=cond, h=h, conditioning_cache=conditioning_cache)
+        return self._field_forward(x_t, t, hist, cond=cond, conditioning_cache=conditioning_cache)
 
     def fm_loss(self, x: torch.Tensor, hist: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size = x.shape[0]
@@ -125,8 +102,7 @@ class RectifiedFlowLOB(nn.Module):
         dt = 1.0 / float(n_steps)
         for i in range(n_steps):
             t = torch.full((batch_size, 1), float(i) / float(n_steps), device=hist.device)
-            h = torch.full((batch_size, 1), dt, device=hist.device) if self.uses_step_conditioning else None
-            x = x + dt * self._field_forward(x, t, hist, cond=cond, h=h)
+            x = x + dt * self._field_forward(x, t, hist, cond=cond)
         return x
 
 

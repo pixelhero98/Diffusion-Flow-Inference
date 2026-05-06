@@ -134,7 +134,6 @@ def _make_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         ctx_causal=bool(preset["ctx_causal"]),
         ctx_local_kernel=int(preset["ctx_local_kernel"]),
         ctx_pool_scales=str(preset["ctx_pool_scales"]),
-        field_parameterization="instantaneous",
         fu_net_type="transformer",
         fu_net_layers=int(cli_args.fu_net_layers),
         fu_net_heads=int(cli_args.fu_net_heads),
@@ -145,13 +144,6 @@ def _make_args(cli_args: argparse.Namespace) -> argparse.Namespace:
         train_variable_context=False,
         train_context_min=None,
         train_context_max=None,
-        lambda_consistency=0.0,
-        lambda_imbalance=0.0,
-        lambda_causal_ot=0.0,
-        lambda_current_match=0.0,
-        lambda_path_fm=0.0,
-        lambda_mi=0.0,
-        lambda_mi_critic=0.0,
         use_minibatch_ot=True,
     )
 

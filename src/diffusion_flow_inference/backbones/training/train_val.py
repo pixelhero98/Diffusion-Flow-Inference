@@ -343,7 +343,6 @@ def train_loop(
 
     if not isinstance(model, OTFlow):
         raise TypeError("train_loop only supports OTFlow models.")
-    model.set_param_normalizer(ds.params_mean, ds.params_std)
 
     opt = optimizer or torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     accum_steps = max(1, int(getattr(cfg.train, "grad_accum_steps", 1)))
