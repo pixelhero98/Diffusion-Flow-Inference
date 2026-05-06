@@ -14,6 +14,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from diffusion_flow_inference.schedules.diffusion_flow import FLOW_TIME_SCHEDULE_KEYS, TRANSFER_SCHEDULE_KEYS
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 DEFAULT_RESULTS_DIR = DEFAULT_OUTPUT_ROOT / "adaptive_solver_matched_nfe"
@@ -43,7 +45,9 @@ DATASETS = (
 LOB_DATASETS = ("cryptos", "es_mbp_10", "sleep_edf")
 TARGET_NFES = (10, 12, 16)
 ADAPTIVE_SOLVERS = ("rk45_adaptive", "dopri5_adaptive")
-TRANSFER_SCHEDULES = ("ays", "gits", "ots")
+TRANSFER_SCHEDULES = TRANSFER_SCHEDULE_KEYS
+FLOW_TIME_SCHEDULES = FLOW_TIME_SCHEDULE_KEYS
+FLOW_TIME_EXCLUSION_LABEL = ",".join(sorted(FLOW_TIME_SCHEDULES))
 RTOLS = (0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001)
 SEEDS = (0, 1, 2, 3, 4)
 LOB_SEEDS = (0, 1, 2)
@@ -223,7 +227,7 @@ def extract_fixed_targets(zip_path: Path) -> List[Dict[str, Any]]:
                 "uniform_crps_mean": float(uniform_raw["crps_mean"]),
                 "uniform_mase_mean": float(uniform_raw["mase_mean"]),
                 "selection_scope": "best_ays_gits_ots_per_dataset_nfe",
-                "excluded_schedule_keys": "late_power_3",
+                "excluded_schedule_keys": FLOW_TIME_EXCLUSION_LABEL,
             }
         )
     expected = len(DATASETS) * len(TARGET_NFES)
@@ -335,7 +339,7 @@ def extract_lob_fixed_targets(rows_path: Path = DEFAULT_LOB_BASELINE_ROWS_PATH) 
                 "n_seeds": int(len(group)),
                 "seed_values": json.dumps(sorted(int(row["seed"]) for row in group)),
                 "selection_scope": "best_ays_gits_ots_per_lob_dataset_nfe",
-                "excluded_schedule_keys": "late_power_3,uniform",
+                "excluded_schedule_keys": f"{FLOW_TIME_EXCLUSION_LABEL},uniform",
             }
         )
 

@@ -68,6 +68,7 @@ SOLVER_LABELS: Dict[str, str] = {
 }
 TARGET_NFES: Tuple[int, ...] = (10, 12, 16)
 TRANSFER_SCHEDULES: Tuple[str, ...] = ("ays", "gits", "ots")
+FLOW_TIME_EXCLUDED_SCHEDULES: Tuple[str, ...] = ("late_power_3", "flowts_power_sampling")
 INTEGRATION_SCHEDULES: Tuple[str, ...] = ("uniform", *TRANSFER_SCHEDULES)
 SCHEDULE_LABELS: Dict[str, str] = {
     "uniform": "uniform",
@@ -1122,8 +1123,8 @@ def build_points(
         and len(points) != expected
     ):
         raise ValueError(f"Expected {expected} PTG points, got {len(points)}.")
-    if any(str(point["schedule_key"]) == "late_power_3" for point in points):
-        raise ValueError("late_power_3 must be excluded from PTG points.")
+    if any(str(point["schedule_key"]) in FLOW_TIME_EXCLUDED_SCHEDULES for point in points):
+        raise ValueError("Flow-time late-biased schedules must be excluded from PTG points.")
     return points
 
 

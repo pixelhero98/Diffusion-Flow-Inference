@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 import diffusion_flow_inference.diagnostics.hardness_mismatch_figure as figure_builder
-from diffusion_flow_inference.schedules.diffusion_flow import BASELINE_SCHEDULE_KEYS, TRANSFER_SCHEDULE_KEYS
+from diffusion_flow_inference.schedules.diffusion_flow import BASELINE_SCHEDULE_KEYS, FLOW_TIME_SCHEDULE_KEYS, TRANSFER_SCHEDULE_KEYS
 
 HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
 
@@ -16,6 +16,7 @@ HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
 class NativeInfoGrowthFigureTests(unittest.TestCase):
     def test_active_schedule_order_excludes_tvd(self) -> None:
         self.assertEqual(figure_builder.SCHEDULE_ORDER, BASELINE_SCHEDULE_KEYS)
+        self.assertEqual(FLOW_TIME_SCHEDULE_KEYS, ("late_power_3", "flowts_power_sampling"))
         self.assertEqual(TRANSFER_SCHEDULE_KEYS, ("ays", "gits", "ots"))
         self.assertNotIn("tvd", figure_builder.SCHEDULE_ORDER)
 
@@ -26,10 +27,13 @@ class NativeInfoGrowthFigureTests(unittest.TestCase):
 
     def test_schedule_node_summary_marks_transfer_schedules(self) -> None:
         uniform = figure_builder.schedule_node_summary("uniform", 4)
+        flowts = figure_builder.schedule_node_summary("flowts_power_sampling", 4)
         ays = figure_builder.schedule_node_summary("ays", 4)
         self.assertFalse(uniform["is_transfer_schedule"])
+        self.assertFalse(flowts["is_transfer_schedule"])
         self.assertTrue(ays["is_transfer_schedule"])
         self.assertEqual(len(uniform["time_grid"]), 5)
+        self.assertEqual(len(flowts["time_grid"]), 5)
 
     def test_synthetic_payload_uses_native_info_growth_trace(self) -> None:
         payload = figure_builder.synthetic_payload(runtime_nfe=4)

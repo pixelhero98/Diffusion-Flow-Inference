@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from diffusion_flow_inference.schedules.diffusion_flow import (
     BASELINE_SCHEDULE_KEYS,
+    FLOW_TIME_SCHEDULE_KEYS,
     TRANSFER_SCHEDULE_KEYS,
     build_schedule_grid,
     load_external_schedule_catalog,
@@ -58,10 +59,21 @@ def paper_schedule_specs() -> List[ScheduleSpec]:
         ScheduleSpec(
             key="late_power_3",
             display_name="Late-power-3",
-            family="hand_designed",
-            comparison_role="deterministic_baseline",
+            family="flow_time_late_biased",
+            comparison_role="flow_time_late_biased_baseline",
             solver_scope="all_fixed_grid_ode",
             implementation_status="implemented",
+        ),
+        ScheduleSpec(
+            key="flowts_power_sampling",
+            display_name="FlowTS power",
+            family="flow_time_late_biased",
+            comparison_role="flow_time_late_biased_baseline",
+            solver_scope="all_fixed_grid_ode",
+            implementation_status="implemented",
+            source_url=external_catalog.get("flowts_power_sampling", {}).get("source_url"),
+            paper_url=external_catalog.get("flowts_power_sampling", {}).get("paper_url"),
+            external_mapping_status=external_catalog.get("flowts_power_sampling", {}).get("mapping_status"),
         ),
         ScheduleSpec(
             key="ays",
@@ -116,6 +128,7 @@ def paper_registry_snapshot() -> Dict[str, Any]:
         "appendix_nfe_values": list(APPENDIX_NFE_VALUES),
         "paper_main_signal_family": PAPER_MAIN_SIGNAL_FAMILY,
         "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS),
+        "flow_time_schedule_keys": list(FLOW_TIME_SCHEDULE_KEYS),
         "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS),
         "schedules": [asdict(spec) for spec in paper_schedule_specs()],
         "solvers": [asdict(spec) for spec in paper_solver_specs()],
@@ -125,6 +138,7 @@ def paper_registry_snapshot() -> Dict[str, Any]:
 __all__ = [
     "APPENDIX_NFE_VALUES",
     "BASELINE_SCHEDULE_KEYS",
+    "FLOW_TIME_SCHEDULE_KEYS",
     "MAIN_NFE_VALUES",
     "METHOD_KEY",
     "PAPER_MAIN_SIGNAL_FAMILY",

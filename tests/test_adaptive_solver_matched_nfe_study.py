@@ -136,7 +136,8 @@ class AdaptiveSolverMatchedNfeStudyTests(unittest.TestCase):
         self.assertAlmostEqual(study.adaptive_atol_for_rtol(0.3), 0.0003)
         self.assertAlmostEqual(study.adaptive_atol_for_rtol(0.0001), 1e-6)
 
-    def test_extract_fixed_targets_excludes_late_power_3(self) -> None:
+    def test_extract_fixed_targets_excludes_flow_time_schedules(self) -> None:
+        self.assertEqual(study.FLOW_TIME_SCHEDULES, ("late_power_3", "flowts_power_sampling"))
         raw_rows = []
         rel_rows = []
         for dataset in study.DATASETS:
@@ -165,7 +166,13 @@ class AdaptiveSolverMatchedNfeStudyTests(unittest.TestCase):
                             "mase_std": "0.0",
                         }
                     )
-                for schedule, avg in (("ays", 0.9), ("gits", 0.8), ("ots", 0.85), ("late_power_3", 0.1)):
+                for schedule, avg in (
+                    ("ays", 0.9),
+                    ("gits", 0.8),
+                    ("ots", 0.85),
+                    ("late_power_3", 0.1),
+                    ("flowts_power_sampling", 0.05),
+                ):
                     raw_rows.append(
                         {
                             **raw_rows[-1],
@@ -206,7 +213,7 @@ class AdaptiveSolverMatchedNfeStudyTests(unittest.TestCase):
             targets = study.extract_fixed_targets(zip_path)
         self.assertEqual(len(targets), len(study.DATASETS) * len(study.TARGET_NFES))
         self.assertEqual({row["fixed_schedule_key"] for row in targets}, {"gits"})
-        self.assertTrue(all(row["excluded_schedule_keys"] == "late_power_3" for row in targets))
+        self.assertTrue(all(row["excluded_schedule_keys"] == "flowts_power_sampling,late_power_3" for row in targets))
 
     def test_lob_average_relative_score_uses_cw1_and_tstr_direction(self) -> None:
         relative_cw1, relative_tstr, average = study.lob_average_relative_score(
@@ -249,7 +256,13 @@ class AdaptiveSolverMatchedNfeStudyTests(unittest.TestCase):
                             "tstr_macro_f1": 0.5,
                         }
                         rows.append(uniform)
-                        for schedule, ratio in (("ays", 0.9), ("gits", 0.8), ("ots", 0.85), ("late_power_3", 0.1)):
+                        for schedule, ratio in (
+                            ("ays", 0.9),
+                            ("gits", 0.8),
+                            ("ots", 0.85),
+                            ("late_power_3", 0.1),
+                            ("flowts_power_sampling", 0.05),
+                        ):
                             rows.append(
                                 {
                                     **uniform,
@@ -265,7 +278,7 @@ class AdaptiveSolverMatchedNfeStudyTests(unittest.TestCase):
             targets = study.extract_lob_fixed_targets(path)
         self.assertEqual(len(targets), len(study.LOB_DATASETS) * len(study.TARGET_NFES))
         self.assertEqual({row["fixed_schedule_key"] for row in targets}, {"gits"})
-        self.assertTrue(all(row["excluded_schedule_keys"] == "late_power_3,uniform" for row in targets))
+        self.assertTrue(all(row["excluded_schedule_keys"] == "flowts_power_sampling,late_power_3,uniform" for row in targets))
 
     def test_matching_chooses_lowest_used_nfe_that_meets_target(self) -> None:
         targets = [

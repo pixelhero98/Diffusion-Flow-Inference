@@ -12,6 +12,7 @@ import torch
 from diffusion_flow_inference.diagnostics.adaptive_noise_sampler_followup import _choose_valid_windows
 from diffusion_flow_inference.schedules.diffusion_flow import (
     BASELINE_SCHEDULE_KEYS,
+    FLOW_TIME_SCHEDULE_KEYS,
     TRANSFER_SCHEDULE_KEYS,
     build_schedule_grid,
     fixed_schedule_shape_statistics,
@@ -514,7 +515,7 @@ def _aggregate_seed_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, An
 def _aggregate_main_table(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     seed_summaries = _aggregate_seed_rows(rows)
     augmented = augment_rows_with_relative_metrics(seed_summaries)
-    return {"method_key": METHOD_KEY, "row_count": int(len(rows)), "summary_row_count": int(len(augmented)), "schedule_keys": sorted({str(row.get("scheduler_key")) for row in rows}), "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS), "seed_summaries": augmented}
+    return {"method_key": METHOD_KEY, "row_count": int(len(rows)), "summary_row_count": int(len(augmented)), "schedule_keys": sorted({str(row.get("scheduler_key")) for row in rows}), "flow_time_schedule_keys": list(FLOW_TIME_SCHEDULE_KEYS), "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS), "seed_summaries": augmented}
 
 
 def _prep_summary(cli_args: argparse.Namespace) -> Dict[str, Any]:
@@ -530,7 +531,7 @@ def _prep_summary(cli_args: argparse.Namespace) -> Dict[str, Any]:
             payload = json.loads(resolved.read_text(encoding="utf-8"))
             manifest_summary["ready_count"] = int(payload.get("ready_count", 0))
             manifest_summary["missing_count"] = int(payload.get("missing_count", 0))
-    return {"runner_mode": "diffusion_flow_time_reparameterization", "runner_signature": RUNNER_SIGNATURE_VERSION, "method_key": METHOD_KEY, "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS), "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS), "scheduled_evaluation_keys": schedules, "solver_names": solvers, "target_nfe_values": nfes, "forecast_datasets": parse_forecast_datasets(str(cli_args.forecast_datasets)), "lob_datasets": parse_lob_datasets(str(cli_args.lob_datasets)), "backbone_manifest": manifest_summary, "dataset_bundle": getattr(cli_args, "_dataset_bundle_resolution", None), "allow_execute": bool(getattr(cli_args, "allow_execute", False))}
+    return {"runner_mode": "diffusion_flow_time_reparameterization", "runner_signature": RUNNER_SIGNATURE_VERSION, "method_key": METHOD_KEY, "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS), "flow_time_schedule_keys": list(FLOW_TIME_SCHEDULE_KEYS), "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS), "scheduled_evaluation_keys": schedules, "solver_names": solvers, "target_nfe_values": nfes, "forecast_datasets": parse_forecast_datasets(str(cli_args.forecast_datasets)), "lob_datasets": parse_lob_datasets(str(cli_args.lob_datasets)), "backbone_manifest": manifest_summary, "dataset_bundle": getattr(cli_args, "_dataset_bundle_resolution", None), "allow_execute": bool(getattr(cli_args, "allow_execute", False))}
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -610,7 +611,7 @@ def run_diffusion_flow_time_reparameterization(cli_args: argparse.Namespace) -> 
     seed_summaries = main_table_summary.pop("seed_summaries")
     save_json({"seed_summaries": seed_summaries}, str(out_root / "locked_test_seed_summary.json"))
     save_json(dict(main_table_summary), str(out_root / "main_table_summary.json"))
-    schedule_selection = {"method_key": METHOD_KEY, "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS), "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS), "scheduled_evaluation_keys": _parse_schedule_names(str(cli_args.baseline_scheduler_names))}
+    schedule_selection = {"method_key": METHOD_KEY, "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS), "flow_time_schedule_keys": list(FLOW_TIME_SCHEDULE_KEYS), "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS), "scheduled_evaluation_keys": _parse_schedule_names(str(cli_args.baseline_scheduler_names))}
     save_json(dict(schedule_selection), str(out_root / "schedule_selection_summary.json"))
     combined = {"prep": dict(prep_payload), "schedule_selection_summary": dict(schedule_selection), "locked_test_seed_summary": {"seed_summaries": seed_summaries}, "main_table_summary": dict(main_table_summary)}
     save_json(dict(combined), str(out_root / "combined_summary.json"))

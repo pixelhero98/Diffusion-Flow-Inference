@@ -116,7 +116,7 @@ class PtgObservedGainFigureTests(unittest.TestCase):
             self.skipTest(f"Missing local 20k.zip at {zip_path}")
         rows = ptg_fig.load_observed_gain_rows(zip_path)
         self.assertEqual(len(rows), 180)
-        self.assertFalse(any(key[3] == "late_power_3" for key in rows))
+        self.assertFalse(any(key[3] in ptg_fig.FLOW_TIME_EXCLUDED_SCHEDULES for key in rows))
         self.assertEqual({key[3] for key in rows}, set(ptg_fig.TRANSFER_SCHEDULES))
 
     def test_synthetic_points_are_exact_scope(self) -> None:
@@ -187,7 +187,7 @@ class PtgObservedGainFigureTests(unittest.TestCase):
             for solver_key in ptg_fig.SOLVER_ORDER:
                 for target_nfe in ptg_fig.TARGET_NFES:
                     runtime_nfe = target_nfe if solver_key in {"euler", "dpmpp2m"} else target_nfe // 2
-                    for schedule_key in (*ptg_fig.INTEGRATION_SCHEDULES, "late_power_3"):
+                    for schedule_key in (*ptg_fig.INTEGRATION_SCHEDULES, *ptg_fig.FLOW_TIME_EXCLUDED_SCHEDULES):
                         stats_rows.append(
                             {
                                 "dataset": dataset,
@@ -222,7 +222,7 @@ class PtgObservedGainFigureTests(unittest.TestCase):
             rows = ptg_fig.load_integration_gain_rows(path)
         self.assertEqual(len(rows), 180)
         self.assertEqual({key[3] for key in rows}, set(ptg_fig.TRANSFER_SCHEDULES))
-        self.assertFalse(any(key[3] == "late_power_3" for key in rows))
+        self.assertFalse(any(key[3] in ptg_fig.FLOW_TIME_EXCLUDED_SCHEDULES for key in rows))
 
 
 if __name__ == "__main__":

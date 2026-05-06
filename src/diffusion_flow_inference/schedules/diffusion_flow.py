@@ -14,11 +14,25 @@ from diffusion_flow_inference.diagnostics.adaptive_deterministic_refinement_foll
 from diffusion_flow_inference.diagnostics.adaptive_noise_sampler_followup import _apply_sample_overrides, _restore_sample_overrides
 from diffusion_flow_inference.backbones.training.train_val import eval_many_windows
 
-BASELINE_SCHEDULE_KEYS: Tuple[str, ...] = ("uniform", "late_power_3", "ays", "gits", "ots")
+BASELINE_SCHEDULE_KEYS: Tuple[str, ...] = ("uniform", "late_power_3", "flowts_power_sampling", "ays", "gits", "ots")
+FLOW_TIME_SCHEDULE_KEYS: Tuple[str, ...] = ("late_power_3", "flowts_power_sampling")
 TRANSFER_SCHEDULE_KEYS: Tuple[str, ...] = ("ays", "gits", "ots")
 
-_AYS_REFERENCE_TIMESTEPS: Tuple[int, ...] = (999, 850, 736, 645, 545, 455, 343, 233, 124, 24, 0)
+_AYS_SD15_REFERENCE_SIGMAS: Tuple[float, ...] = (
+    14.615,
+    6.475,
+    3.861,
+    2.697,
+    1.886,
+    1.396,
+    0.963,
+    0.652,
+    0.399,
+    0.152,
+    0.029,
+)
 _GITS_REFERENCE_SIGMAS: Tuple[float, ...] = (80.0, 10.9836, 3.8811, 1.5840, 0.5666, 0.1698, 0.0020)
+_FLOWTS_POWER_KSCALE = 0.03
 _OTS_DEFAULT_EPS = 1e-3
 _OTS_LINEAR_BETA_0 = 0.1
 _OTS_LINEAR_BETA_1 = 20.0
@@ -26,7 +40,8 @@ _OTS_LINEAR_BETA_1 = 20.0
 _SCHEDULE_TIME_ALIGNMENT: Dict[str, str] = {
     "uniform": "runtime_uniform",
     "late_power_3": "runtime_late_power_3",
-    "ays": "runtime_ays_ddpm_index_affine",
+    "flowts_power_sampling": "runtime_flowts_power_sampling_kscale_0_03",
+    "ays": "runtime_ays_sd15_logsigma_affine",
     "gits": "runtime_gits_sigma_affine",
     "ots": "runtime_ots_vp_time_affine",
 }
@@ -41,6 +56,14 @@ def _late_power_grid(n_steps: int, power: float) -> Tuple[float, ...]:
     n_steps = int(n_steps)
     power = float(power)
     return tuple(1.0 - (1.0 - float(idx) / float(n_steps)) ** power for idx in range(n_steps + 1))
+
+
+def _flowts_power_grid(n_steps: int, kscale: float = _FLOWTS_POWER_KSCALE) -> Tuple[float, ...]:
+    n_steps = int(n_steps)
+    if n_steps < 1:
+        raise ValueError("n_steps must be positive.")
+    kscale = float(kscale)
+    return tuple((float(idx) / float(n_steps)) ** kscale for idx in range(n_steps + 1))
 
 
 def _ensure_monotone(grid: Sequence[float]) -> Tuple[float, ...]:
@@ -79,8 +102,31 @@ def _normalize_descending_reference(values: Sequence[float]) -> Tuple[float, ...
     return _ensure_monotone(progression.tolist())
 
 
-def _ays_reference_progression() -> Tuple[float, ...]:
-    return _normalize_descending_reference(_AYS_REFERENCE_TIMESTEPS)
+def _loglinear_descending_reference(values: Sequence[float], n_steps: int) -> Tuple[float, ...]:
+    arr = np.asarray(values, dtype=np.float64)
+    n_steps = int(n_steps)
+    if n_steps < 1:
+        raise ValueError("n_steps must be positive.")
+    if arr.ndim != 1 or arr.size < 2:
+        raise ValueError("Expected a one-dimensional reference sequence.")
+    if np.any(~np.isfinite(arr)) or np.any(arr <= 0.0):
+        raise ValueError("Log-linear interpolation requires positive finite reference values.")
+    if np.any(np.diff(arr) >= 0.0):
+        raise ValueError("Reference sequence must be strictly descending.")
+    if n_steps == int(arr.size) - 1:
+        return tuple(float(x) for x in arr.tolist())
+    src = np.linspace(0.0, 1.0, int(arr.size), dtype=np.float64)
+    dst = np.linspace(0.0, 1.0, n_steps + 1, dtype=np.float64)
+    log_values = np.log(arr)
+    interpolated = np.exp(np.interp(dst, src, log_values))
+    interpolated[0] = arr[0]
+    interpolated[-1] = arr[-1]
+    return tuple(float(x) for x in interpolated.tolist())
+
+
+def _ays_reference_progression_for_steps(n_steps: int) -> Tuple[float, ...]:
+    sigmas = _loglinear_descending_reference(_AYS_SD15_REFERENCE_SIGMAS, int(n_steps))
+    return _normalize_descending_reference(sigmas)
 
 
 def _gits_reference_progression() -> Tuple[float, ...]:
@@ -301,8 +347,10 @@ def build_schedule_grid(schedule_key: str, n_steps: int) -> Optional[Tuple[float
         return _ensure_monotone(_uniform_grid(int(n_steps)))
     if key == "late_power_3":
         return _ensure_monotone(_late_power_grid(int(n_steps), power=3.0))
+    if key == "flowts_power_sampling":
+        return _ensure_monotone(_flowts_power_grid(int(n_steps)))
     if key == "ays":
-        return _resample_reference_progression(_ays_reference_progression(), int(n_steps))
+        return _ays_reference_progression_for_steps(int(n_steps))
     if key == "gits":
         return _resample_reference_progression(_gits_reference_progression(), int(n_steps))
     if key == "ots":
@@ -317,6 +365,7 @@ def schedule_display_name(schedule_key: str) -> str:
     names = {
         "uniform": "Time-uniform",
         "late_power_3": "Late-power-3",
+        "flowts_power_sampling": "FlowTS power",
         "ays": "AYS",
         "gits": "GITS",
         "ots": "OTS",
@@ -424,6 +473,7 @@ def run_fixed_schedule_variant(
 
 __all__ = [
     "BASELINE_SCHEDULE_KEYS",
+    "FLOW_TIME_SCHEDULE_KEYS",
     "TRANSFER_SCHEDULE_KEYS",
     "build_schedule_grid",
     "fixed_schedule_shape_statistics",
