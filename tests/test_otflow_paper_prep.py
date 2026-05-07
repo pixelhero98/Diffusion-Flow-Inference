@@ -84,6 +84,60 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             self.assertAlmostEqual(grid[-1], 1.0)
             self.assertTrue(all(right > left for left, right in zip(grid, grid[1:])), key)
 
+    def test_active_schedule_grids_reject_non_positive_steps(self) -> None:
+        for key in BASELINE_SCHEDULE_KEYS:
+            for n_steps in (0, -1):
+                with self.assertRaisesRegex(ValueError, "n_steps must be positive"):
+                    build_schedule_grid(key, n_steps)
+
+    def test_scheduler_cases_evaluate_uniform_first(self) -> None:
+        args = runner.build_argparser().parse_args(["--baseline_scheduler_names", "ays,uniform"])
+        cases = runner._scheduler_cases_for_datasets(args, ["electricity"])
+        self.assertEqual([case["scheduler_key"] for case in cases["electricity"]], ["uniform", "ays"])
+
+    def test_aggregate_relative_gain_uses_fraction_units(self) -> None:
+        rows = [
+            {
+                "benchmark_family": "forecast_extrapolation",
+                "split_phase": "locked_test",
+                "seed": 0,
+                "dataset": "electricity",
+                "checkpoint_id": "ck",
+                "backbone_name": "otflow",
+                "train_steps": 20000,
+                "train_budget_label": "20k",
+                "target_nfe": 10,
+                "solver_key": "euler",
+                "scheduler_key": "ays",
+                "experiment_scope": "main",
+                "row_status": "complete",
+                "crps": 3.0,
+            },
+            {
+                "benchmark_family": "forecast_extrapolation",
+                "split_phase": "locked_test",
+                "seed": 0,
+                "dataset": "electricity",
+                "checkpoint_id": "ck",
+                "backbone_name": "otflow",
+                "train_steps": 20000,
+                "train_budget_label": "20k",
+                "target_nfe": 10,
+                "solver_key": "euler",
+                "scheduler_key": "uniform",
+                "experiment_scope": "main",
+                "row_status": "complete",
+                "crps": 4.0,
+            },
+        ]
+
+        summary = runner._aggregate_main_table(rows)["seed_summaries"]
+        by_schedule = {row["scheduler_key"]: row for row in summary}
+
+        self.assertAlmostEqual(runner._safe_relative_gain(3.0, 4.0), 0.25)
+        self.assertAlmostEqual(by_schedule["ays"]["relative_crps_gain_vs_uniform"], 0.25)
+        self.assertAlmostEqual(by_schedule["uniform"]["relative_crps_gain_vs_uniform"], 0.0)
+
     def test_flowts_power_sampling_grid_is_active_flow_time_schedule(self) -> None:
         n_steps = 10
         grid = np.asarray(build_schedule_grid("flowts_power_sampling", n_steps), dtype=np.float64)

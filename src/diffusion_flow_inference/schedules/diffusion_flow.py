@@ -358,21 +358,31 @@ def load_external_schedule_catalog() -> Dict[str, Dict[str, Any]]:
     return {str(key).lower(): dict(value) for key, value in payload.items()}
 
 
+def _validate_positive_n_steps(n_steps: int) -> int:
+    n_steps = int(n_steps)
+    if n_steps <= 0:
+        raise ValueError(f"n_steps must be positive, got {n_steps}.")
+    return n_steps
+
+
 def build_schedule_grid(schedule_key: str, n_steps: int) -> Optional[Tuple[float, ...]]:
     key = str(schedule_key).strip().lower()
+    n_steps = _validate_positive_n_steps(int(n_steps))
     if key == "uniform":
-        return _ensure_monotone(_uniform_grid(int(n_steps)))
+        return _ensure_monotone(_uniform_grid(n_steps))
     if key == "late_power_3":
-        return _ensure_monotone(_late_power_grid(int(n_steps), power=3.0))
+        return _ensure_monotone(_late_power_grid(n_steps, power=3.0))
     if key == "flowts_power_sampling":
-        return _ensure_monotone(_flowts_power_grid(int(n_steps)))
+        return _ensure_monotone(_flowts_power_grid(n_steps))
     if key == "ays":
-        return _ays_reference_progression_for_steps(int(n_steps))
+        return _ays_reference_progression_for_steps(n_steps)
     if key == "gits":
-        return _gits_reference_progression_for_steps(int(n_steps))
+        return _gits_reference_progression_for_steps(n_steps)
     if key == "ots":
-        return _ots_reference_progression(int(n_steps))
+        return _ots_reference_progression(n_steps)
     return None
+
+
 def schedule_display_name(schedule_key: str) -> str:
     key = str(schedule_key).strip().lower()
     names = {

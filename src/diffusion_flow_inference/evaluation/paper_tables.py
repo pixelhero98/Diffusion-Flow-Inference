@@ -140,6 +140,21 @@ def _safe_relative_gain(metric_value: Any, baseline_value: Any) -> Optional[floa
     return float(1.0 - (metric / baseline))
 
 
+def _relative_gain_value(row: Mapping[str, Any], relative_key: str) -> Optional[float]:
+    value = _row_value(row, relative_key, f"{relative_key}_mean")
+    try:
+        cast = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(cast):
+        return None
+    return cast
+
+
+def _metric_value(row: Mapping[str, Any], metric_key: str) -> Any:
+    return _row_value(row, metric_key, f"{metric_key}_mean")
+
+
 def augment_rows_with_relative_metrics(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     baseline_rows: Dict[Tuple[Any, ...], Mapping[str, Any]] = {}
     for row in rows:
@@ -151,17 +166,17 @@ def augment_rows_with_relative_metrics(rows: Sequence[Mapping[str, Any]]) -> Lis
         payload = dict(row)
         baseline = baseline_rows.get(_relative_match_key(row))
         family = str(_row_value(row, "benchmark_family") or "")
-        payload["relative_crps_gain_vs_uniform"] = None
-        payload["relative_score_gain_vs_uniform"] = None
+        payload["relative_crps_gain_vs_uniform"] = _relative_gain_value(row, "relative_crps_gain_vs_uniform")
+        payload["relative_score_gain_vs_uniform"] = _relative_gain_value(row, "relative_score_gain_vs_uniform")
         if baseline is not None and family == "forecast_extrapolation":
             payload["relative_crps_gain_vs_uniform"] = _safe_relative_gain(
-                _row_value(row, "crps"),
-                _row_value(baseline, "crps"),
+                _metric_value(row, "crps"),
+                _metric_value(baseline, "crps"),
             )
         if baseline is not None and family == "lob_conditional_generation":
             payload["relative_score_gain_vs_uniform"] = _safe_relative_gain(
-                _row_value(row, "score_main"),
-                _row_value(baseline, "score_main"),
+                _metric_value(row, "score_main"),
+                _metric_value(baseline, "score_main"),
             )
         enriched.append(payload)
     return enriched

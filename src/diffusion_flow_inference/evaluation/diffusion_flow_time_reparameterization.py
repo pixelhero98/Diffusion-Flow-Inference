@@ -149,7 +149,7 @@ def _safe_relative_gain(value: Any, baseline_value: Any) -> Optional[float]:
     b = _optional_float(baseline_value)
     if v is None or b is None or abs(float(b)) <= 1e-12:
         return None
-    return float(100.0 * (1.0 - float(v) / float(b)))
+    return float(1.0 - float(v) / float(b))
 
 
 def _parse_schedule_names(text: str) -> List[str]:
@@ -389,6 +389,8 @@ def _build_row(*, benchmark_family: str, split_phase: str, seed: int, dataset: s
 
 def _scheduler_cases_for_datasets(cli_args: argparse.Namespace, datasets: Iterable[str]) -> Dict[str, List[Dict[str, Any]]]:
     schedule_names = _parse_schedule_names(str(cli_args.baseline_scheduler_names))
+    if UNIFORM_SCHEDULER_KEY in schedule_names:
+        schedule_names = [UNIFORM_SCHEDULER_KEY] + [key for key in schedule_names if key != UNIFORM_SCHEDULER_KEY]
     return {str(dataset): [{"scheduler_key": key} for key in schedule_names] for dataset in datasets}
 
 
