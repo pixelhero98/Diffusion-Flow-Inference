@@ -1,0 +1,26 @@
+{
+  "description": "Smoke configuration for offline reference-schedule generation and qLogNEI BO suggestion.",
+  "ptg_json": "outputs/ptg_observed_gain/ptg_observed_gain_inputs.json",
+  "dataset": "electricity",
+  "solver": "euler",
+  "target_nfe": 10,
+  "density_floor_eta": 0.05,
+  "n_initial": 16,
+  "small_kl_band": [0.005, 0.02],
+  "medium_kl_band": [0.02, 0.08],
+  "lambda_kl": 0.05,
+  "batch_size": 2,
+  "forecast_observation_example": {
+    "uniform_baseline": {
+      "crps": 4.0,
+      "mase": 2.0
+    },
+    "observations": [
+      {
+        "theta": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "crps": 3.8,
+        "mase": 1.9
+      }
+    ]
+  }
+}

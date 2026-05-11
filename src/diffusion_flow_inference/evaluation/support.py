@@ -69,7 +69,18 @@ LOB_PHYSICAL_BATCH_SIZE: Dict[str, int] = {
 
 
 _DEPRECATED_CFG_KEYS_BY_SECTION: Dict[str, set[str]] = {
-    "model": {"field_parameterization"},
+    "model": {
+        "field_parameterization",
+        "base" + "line_latent_dim",
+        "c" + "gan_recon_weight",
+        "diff" + "usion_steps",
+        "g" + "an_noise_dim",
+        "ko" + "vae_pred_weight",
+        "ko" + "vae_ridge",
+        "time" + "gan_moment_weight",
+        "time" + "gan_supervision_weight",
+        "v" + "ae_kl_weight",
+    },
     "fm": {
         "lambda_mean",
         "lambda_consistency",
@@ -451,7 +462,8 @@ def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow
         "sample": type(cfg.sample),
     }
     for section_name, cls in section_types.items():
-        section_values = dict(cfg_dict.get(section_name, {}))
+        section_values = {field.name: getattr(getattr(cfg, section_name), field.name) for field in fields(cls)}
+        section_values.update(dict(cfg_dict.get(section_name, {})))
         if section_name == "train":
             section_values["device"] = device
         valid_keys = {field.name for field in fields(cls)}

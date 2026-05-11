@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -61,7 +62,7 @@ from diffusion_flow_inference.common.paths import (
 from diffusion_flow_inference.datasets.bundles import ensure_processed_dataset_bundle
 from diffusion_flow_inference.backbones.training.train_val import save_json
 
-RUNNER_SIGNATURE_VERSION = "diffusion_flow_time_reparameterization_v1"
+RUNNER_SIGNATURE_VERSION = "diffusion_flow_time_reparameterization_v2"
 DEFAULT_OUT_ROOT = project_outputs_root() / "diffusion_flow_time_reparameterization"
 DEFAULT_DATASET_BUNDLE_EXTRACT_ROOT = project_outputs_root() / "dataset_bundles" / "extracted"
 DEFAULT_TARGET_NFE_VALUES: Tuple[int, ...] = (10, 12, 16)
@@ -114,6 +115,7 @@ ROW_RECORD_FIELDS: Tuple[str, ...] = (
     "num_eval_samples",
     "eval_examples",
     "eval_windows",
+    "protocol_hash",
     "row_status",
 )
 
@@ -158,6 +160,29 @@ def _parse_schedule_names(text: str) -> List[str]:
     if unknown:
         raise ValueError(f"Unknown active diffusion-flow schedules: {unknown}")
     return names
+
+
+def _protocol_config_fingerprint(cli_args: argparse.Namespace) -> str:
+    payload = {
+        "runner_signature": RUNNER_SIGNATURE_VERSION,
+        "forecast_datasets": parse_forecast_datasets(str(cli_args.forecast_datasets)),
+        "lob_datasets": parse_lob_datasets(str(cli_args.lob_datasets)),
+        "target_nfe_values": parse_int_csv(str(cli_args.target_nfe_values)),
+        "solver_names": parse_csv(str(cli_args.solver_names)),
+        "baseline_scheduler_names": _parse_schedule_names(str(cli_args.baseline_scheduler_names)),
+        "otflow_train_steps": int(cli_args.otflow_train_steps),
+        "dataset_seed": int(cli_args.dataset_seed),
+        "num_eval_samples": int(cli_args.num_eval_samples),
+        "eval_horizon": int(cli_args.eval_horizon),
+        "eval_windows_val": int(cli_args.eval_windows_val),
+        "eval_windows_test": int(cli_args.eval_windows_test),
+        "calibration_trace_samples": int(cli_args.calibration_trace_samples),
+        "dataset_root": str(resolve_project_path(str(cli_args.dataset_root))),
+        "shared_backbone_root": str(resolve_project_path(str(cli_args.shared_backbone_root))),
+        "backbone_manifest": str(resolve_project_path(str(cli_args.backbone_manifest))) if str(cli_args.backbone_manifest).strip() else "",
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _path_matches_project_default(path: Path, default_path: Path) -> bool:
@@ -279,12 +304,16 @@ def _init_row_recorder(out_root: Path, cli_args: argparse.Namespace) -> Dict[str
     out_root.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_root / str(getattr(cli_args, "row_jsonl_name", "rows.jsonl"))
     csv_path = out_root / str(getattr(cli_args, "row_csv_name", "rows.csv"))
-    rows_by_key = _load_rows(jsonl_path) if bool(getattr(cli_args, "resume", True)) else {}
+    protocol_hash = _protocol_config_fingerprint(cli_args)
+    run_config_path = out_root / "run_config.json"
+    previous_config = json.loads(run_config_path.read_text(encoding="utf-8")) if run_config_path.exists() else {}
+    can_resume = bool(getattr(cli_args, "resume", True)) and str(previous_config.get("protocol_hash", "")) == protocol_hash
+    rows_by_key = _load_rows(jsonl_path) if can_resume else {}
     fh = jsonl_path.open("a", encoding="utf-8")
-    save_json({"runner_signature": RUNNER_SIGNATURE_VERSION, "method_key": METHOD_KEY, "args": vars(cli_args)}, str(out_root / "run_config.json"))
+    save_json({"runner_signature": RUNNER_SIGNATURE_VERSION, "method_key": METHOD_KEY, "protocol_hash": protocol_hash, "args": vars(cli_args)}, str(run_config_path))
     if rows_by_key:
         _write_row_csv(csv_path, list(rows_by_key.values()))
-    return {"out_root": out_root, "jsonl_path": jsonl_path, "csv_path": csv_path, "fh": fh, "rows_by_key": rows_by_key}
+    return {"out_root": out_root, "jsonl_path": jsonl_path, "csv_path": csv_path, "fh": fh, "rows_by_key": rows_by_key, "protocol_hash": protocol_hash}
 
 
 def _append_row_record(row_recorder: Mapping[str, Any], row: Mapping[str, Any]) -> None:
@@ -332,7 +361,7 @@ def _fixed_schedule_details(scheduler_key: str, runtime_nfe: int) -> Dict[str, A
     return details
 
 
-def _build_row(*, benchmark_family: str, split_phase: str, seed: int, dataset: str, checkpoint: Mapping[str, Any], target_nfe: int, runtime_nfe: int, solver_key: str, scheduler_key: str, details: Mapping[str, Any], metrics: Mapping[str, Any], row_signature: str) -> Dict[str, Any]:
+def _build_row(*, benchmark_family: str, split_phase: str, seed: int, dataset: str, checkpoint: Mapping[str, Any], target_nfe: int, runtime_nfe: int, solver_key: str, scheduler_key: str, details: Mapping[str, Any], metrics: Mapping[str, Any], row_signature: str, protocol_hash: str) -> Dict[str, Any]:
     selection_metric = selection_metric_for_family(str(benchmark_family))
     realized_nfe = metrics.get("realized_nfe")
     if realized_nfe is None:
@@ -383,6 +412,7 @@ def _build_row(*, benchmark_family: str, split_phase: str, seed: int, dataset: s
         "num_eval_samples": metrics.get("num_eval_samples"),
         "eval_examples": metrics.get("eval_examples"),
         "eval_windows": metrics.get("eval_windows"),
+        "protocol_hash": str(protocol_hash),
         "row_status": "complete",
     }
 
@@ -429,7 +459,7 @@ def _run_forecast_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[s
                             metrics = dict(metrics)
                             metrics["relative_crps_gain_vs_uniform"] = _safe_relative_gain(metrics.get("crps"), cell_uniform_metrics.get("crps"))
                             metrics["relative_mase_gain_vs_uniform"] = _safe_relative_gain(metrics.get("mase"), cell_uniform_metrics.get("mase"))
-                        row = _build_row(benchmark_family=FORECAST_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint=checkpoint, target_nfe=int(target_nfe), runtime_nfe=int(runtime_nfe), solver_key=str(solver_key), scheduler_key=scheduler_key, details=details, metrics=metrics, row_signature=str(case["row_signature"]))
+                        row = _build_row(benchmark_family=FORECAST_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint=checkpoint, target_nfe=int(target_nfe), runtime_nfe=int(runtime_nfe), solver_key=str(solver_key), scheduler_key=scheduler_key, details=details, metrics=metrics, row_signature=str(case["row_signature"]), protocol_hash=str(row_recorder["protocol_hash"]))
                         _append_row_record(row_recorder, row)
                         rows.append(row)
                         if scheduler_key == UNIFORM_SCHEDULER_KEY:
@@ -473,7 +503,7 @@ def _run_lob_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[str, A
                         metrics = {"score_main": result_row.get("score_main"), "conditional_w1": result_row.get("conditional_w1"), "tstr_macro_f1": result_row.get("tstr_macro_f1"), "efficiency_ms_per_sample": result_row.get("efficiency_ms_per_sample"), "eval_windows": int(len(chosen_eval_t0s)), "realized_nfe": _realized_nfe_for_solver(str(solver_key), int(runtime_nfe))}
                         if scheduler_key != UNIFORM_SCHEDULER_KEY and cell_uniform_metrics is not None:
                             metrics["relative_score_gain_vs_uniform"] = _safe_relative_gain(metrics.get("score_main"), cell_uniform_metrics.get("score_main"))
-                        row = _build_row(benchmark_family=LOB_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint=checkpoint, target_nfe=int(target_nfe), runtime_nfe=int(runtime_nfe), solver_key=str(solver_key), scheduler_key=scheduler_key, details=details, metrics=metrics, row_signature=str(case["row_signature"]))
+                        row = _build_row(benchmark_family=LOB_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint=checkpoint, target_nfe=int(target_nfe), runtime_nfe=int(runtime_nfe), solver_key=str(solver_key), scheduler_key=scheduler_key, details=details, metrics=metrics, row_signature=str(case["row_signature"]), protocol_hash=str(row_recorder["protocol_hash"]))
                         _append_row_record(row_recorder, row)
                         rows.append(row)
                         if scheduler_key == UNIFORM_SCHEDULER_KEY:

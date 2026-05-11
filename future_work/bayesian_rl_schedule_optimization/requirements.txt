@@ -1,0 +1,6 @@
+# Optional future-work dependencies for BoTorch closed-loop noisy BO.
+# Install inside the main project environment after the core package is available.
+
+botorch>=0.17
+gpytorch>=1.14
+matplotlib>=3.8

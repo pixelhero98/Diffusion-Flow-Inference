@@ -167,12 +167,19 @@ def augment_rows_with_relative_metrics(rows: Sequence[Mapping[str, Any]]) -> Lis
         baseline = baseline_rows.get(_relative_match_key(row))
         family = str(_row_value(row, "benchmark_family") or "")
         payload["relative_crps_gain_vs_uniform"] = _relative_gain_value(row, "relative_crps_gain_vs_uniform")
+        payload["relative_mase_gain_vs_uniform"] = _relative_gain_value(row, "relative_mase_gain_vs_uniform")
         payload["relative_score_gain_vs_uniform"] = _relative_gain_value(row, "relative_score_gain_vs_uniform")
         if baseline is not None and family == "forecast_extrapolation":
-            payload["relative_crps_gain_vs_uniform"] = _safe_relative_gain(
-                _metric_value(row, "crps"),
-                _metric_value(baseline, "crps"),
-            )
+            if payload["relative_crps_gain_vs_uniform"] is None:
+                payload["relative_crps_gain_vs_uniform"] = _safe_relative_gain(
+                    _metric_value(row, "crps"),
+                    _metric_value(baseline, "crps"),
+                )
+            if payload["relative_mase_gain_vs_uniform"] is None:
+                payload["relative_mase_gain_vs_uniform"] = _safe_relative_gain(
+                    _metric_value(row, "mase"),
+                    _metric_value(baseline, "mase"),
+                )
         if baseline is not None and family == "lob_conditional_generation":
             payload["relative_score_gain_vs_uniform"] = _safe_relative_gain(
                 _metric_value(row, "score_main"),
