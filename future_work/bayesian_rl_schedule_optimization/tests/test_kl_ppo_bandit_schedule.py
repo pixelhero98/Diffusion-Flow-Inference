@@ -16,6 +16,7 @@ from kl_ppo_bandit_schedule import (  # noqa: E402
     PPO_COMPARISON_SCHEDULES,
     _DiagonalGaussianPolicy,
     _complete_train_rows_for_resume,
+    _final_row_matches_current,
     _global_final_key,
     _indices_hash,
     _matching_cached_row_for_ppo,
@@ -334,6 +335,39 @@ class BanditKlPpoTests(unittest.TestCase):
                 schedule_grid=schedule,
                 expected_eval_examples=3,
                 expected_test_indices_hash=test_hash,
+            )
+        )
+
+    def test_legacy_full_test_final_row_without_hash_is_accepted(self) -> None:
+        checkpoint = {"checkpoint_id": "ckpt", "splits": {"test": [object(), object(), object()]}}
+        row = {
+            "checkpoint_id": "ckpt",
+            "runtime_nfe": 2,
+            "num_eval_samples": 5,
+            "eval_examples": 3,
+            "schedule_grid": [0.0, 0.5, 1.0],
+        }
+
+        self.assertTrue(
+            _final_row_matches_current(
+                row,
+                checkpoint=checkpoint,
+                runtime_nfe=2,
+                schedule_grid=[0.0, 0.5, 1.0],
+                num_eval_samples=5,
+                expected_eval_examples=3,
+                expected_test_indices_hash=_indices_hash([0, 1, 2]),
+            )
+        )
+        self.assertFalse(
+            _final_row_matches_current(
+                row,
+                checkpoint={"checkpoint_id": "ckpt", "splits": {"test": [object(), object(), object(), object()]}},
+                runtime_nfe=2,
+                schedule_grid=[0.0, 0.5, 1.0],
+                num_eval_samples=5,
+                expected_eval_examples=3,
+                expected_test_indices_hash=_indices_hash([0, 1, 2]),
             )
         )
 

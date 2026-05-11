@@ -148,6 +148,36 @@ def _complete_train_rows_for_resume(
     return kept, completed
 
 
+def _selector_row_matches_candidate(
+    row: Mapping[str, Any],
+    *,
+    candidate_id: str,
+    schedule_record: Mapping[str, Any],
+    expected_eval_examples: int,
+    num_eval_samples: int,
+    selector_indices_hash: str,
+    run_fingerprint: str,
+) -> bool:
+    if str(row.get("split")) != "ppo_selector_30pct":
+        return False
+    if str(row.get("candidate_id")) != str(candidate_id):
+        return False
+    row_hash = row.get("schedule_hash")
+    if row_hash is None and row.get("schedule_grid") is not None:
+        row_hash = schedule_hash(row["schedule_grid"])
+    if str(row_hash) != str(schedule_hash(schedule_record["schedule_grid"])):
+        return False
+    if int(row.get("eval_examples", -1)) != int(expected_eval_examples):
+        return False
+    if int(row.get("num_eval_samples", -1)) != int(num_eval_samples):
+        return False
+    if row.get("selector_indices_hash") is not None and str(row["selector_indices_hash"]) != str(selector_indices_hash):
+        return False
+    if row.get("run_fingerprint") is not None and str(row["run_fingerprint"]) != str(run_fingerprint):
+        return False
+    return True
+
+
 def _policy_run_fingerprint(args: argparse.Namespace, *, checkpoint: Mapping[str, Any], dataset: str, target_nfe: int, solver_key: str, reference: Mapping[str, Any], split_payload: Mapping[str, Any]) -> str:
     return _stable_hash(
         {
@@ -688,6 +718,7 @@ def _run_ppo_training_for_cell(
     policy = _DiagonalGaussianPolicy(calibration["policy_mu"], calibration["policy_std"], device=policy_device)
     policy_path = cell_out / "ppo_bandit_policy.pt"
     trials_path = cell_out / "ppo_bandit_trials.jsonl"
+    total_updates = int(args.ppo_updates)
     run_fingerprint = _policy_run_fingerprint(
         args,
         checkpoint=checkpoint,
@@ -699,35 +730,33 @@ def _run_ppo_training_for_cell(
     )
     if bool(args.resume):
         existing_trials = _load_jsonl(trials_path)
+        existing_selector_rows = [dict(row) for row in existing_trials if str(row.get("split")) == "ppo_selector_30pct"]
         train_rows, completed_updates = _complete_train_rows_for_resume(
             existing_trials,
             batch_size=int(args.ppo_batch_size),
         )
-        if len(train_rows) != len(existing_trials):
-            _write_jsonl(trials_path, train_rows)
+        clean_rows = list(train_rows)
+        if completed_updates >= total_updates:
+            clean_rows.extend(existing_selector_rows)
+        if len(clean_rows) != len(existing_trials):
+            _write_jsonl(trials_path, clean_rows)
     else:
         existing_trials = []
+        existing_selector_rows = []
         train_rows = []
         completed_updates = 0
         if trials_path.exists():
             _write_jsonl(trials_path, [])
     if completed_updates > 0:
         metadata = _load_policy(policy_path, policy, device=policy_device)
-        metadata_ok = bool(metadata) and (
-            str(metadata.get("run_fingerprint", "")) == run_fingerprint
-            or (
-                metadata.get("run_fingerprint") is None
-                and str(metadata.get("dataset")) == str(dataset)
-                and str(metadata.get("solver_key")) == str(solver_key)
-                and int(metadata.get("target_nfe", -1)) == int(target_nfe)
-                and int(metadata.get("last_update", -1)) >= completed_updates - 1
-            )
-        )
+        metadata_ok = bool(metadata) and str(metadata.get("run_fingerprint", "")) == run_fingerprint
         if not metadata_ok:
-            train_rows = []
-            completed_updates = 0
-            _write_jsonl(trials_path, [])
-    total_updates = int(args.ppo_updates)
+            if completed_updates < total_updates:
+                train_rows = []
+                completed_updates = 0
+                _write_jsonl(trials_path, [])
+            else:
+                policy = _DiagonalGaussianPolicy(calibration["policy_mu"], calibration["policy_std"], device=policy_device)
     for update in range(completed_updates, total_updates):
         entropy_coef = float(args.entropy_coef_end)
         if total_updates > 1:
@@ -840,9 +869,34 @@ def _run_ppo_training_for_cell(
                 "smoothness": current_mean["smoothness"],
             }
         )
+        selector_indices_hash = _indices_hash(selector_indices)
+        existing_selector_by_key = {
+            (str(row.get("candidate_id")), str(row.get("schedule_hash") or (schedule_hash(row["schedule_grid"]) if row.get("schedule_grid") is not None else ""))): dict(row)
+            for row in _load_jsonl(trials_path)
+            if str(row.get("split")) == "ppo_selector_30pct"
+        }
         selector_rows: List[Dict[str, Any]] = []
         for idx, candidate in enumerate(candidate_pool):
             schedule_record = theta_to_checked_schedule(q_ref, candidate["theta"], basis=basis)
+            candidate_id = str(candidate.get("candidate_id", f"selector_{idx:03d}"))
+            selector_key = (candidate_id, schedule_hash(schedule_record["schedule_grid"]))
+            existing_selector = existing_selector_by_key.get(selector_key)
+            if existing_selector is not None and _selector_row_matches_candidate(
+                existing_selector,
+                candidate_id=candidate_id,
+                schedule_record=schedule_record,
+                expected_eval_examples=len(selector_ds),
+                num_eval_samples=int(args.num_eval_samples),
+                selector_indices_hash=selector_indices_hash,
+                run_fingerprint=run_fingerprint,
+            ):
+                selector_rows.append(existing_selector)
+                continue
+            print(
+                f"[ppo-bandit] selector eval dataset={dataset} nfe={target_nfe} solver={solver_key} "
+                f"candidate={candidate_id} {idx + 1}/{len(candidate_pool)} examples={len(selector_ds)}",
+                flush=True,
+            )
             metrics = _evaluate_cached(
                 cache=cache,
                 core=core,
@@ -860,7 +914,7 @@ def _run_ppo_training_for_cell(
                 solver_key=str(solver_key),
                 target_nfe=int(target_nfe),
                 runtime_nfe=runtime_nfe,
-                candidate_id=str(candidate.get("candidate_id", f"selector_{idx:03d}")),
+                candidate_id=candidate_id,
                 source="ppo_bandit_selector_confirmation",
                 split="ppo_selector_30pct",
                 theta=candidate["theta"],
@@ -870,6 +924,8 @@ def _run_ppo_training_for_cell(
                 beta_ref=float(calibration["beta_ref"]),
                 lambda_bad=float(args.lambda_bad),
             )
+            row["selector_indices_hash"] = selector_indices_hash
+            row["run_fingerprint"] = run_fingerprint
             selector_rows.append(row)
             _append_jsonl(trials_path, row)
         best_row = max(selector_rows, key=selector_rank_key)
@@ -963,7 +1019,12 @@ def _matching_cached_row_for_ppo(
                 checkpoint_id = run_config.get("checkpoint_id")
         if checkpoint_id is None or str(checkpoint_id) != str(checkpoint["checkpoint_id"]):
             continue
-        if str(row.get("test_indices_hash", "")) != str(expected_test_indices_hash):
+        if _row_test_indices_hash_or_legacy_full_test(
+            row,
+            checkpoint=checkpoint,
+            expected_eval_examples=int(expected_eval_examples),
+            expected_test_indices_hash=str(expected_test_indices_hash),
+        ) != str(expected_test_indices_hash):
             continue
         row_hash = row.get("schedule_hash")
         if row_hash is None and row.get("schedule_grid") is not None:
@@ -1011,12 +1072,36 @@ def _final_row_matches_current(
         return False
     if int(row.get("eval_examples", -1)) != int(expected_eval_examples):
         return False
-    if str(row.get("test_indices_hash", "")) != str(expected_test_indices_hash):
+    if _row_test_indices_hash_or_legacy_full_test(
+        row,
+        checkpoint=checkpoint,
+        expected_eval_examples=int(expected_eval_examples),
+        expected_test_indices_hash=str(expected_test_indices_hash),
+    ) != str(expected_test_indices_hash):
         return False
     row_hash = row.get("schedule_hash")
     if row_hash is None and row.get("schedule_grid") is not None:
         row_hash = schedule_hash(row["schedule_grid"])
     return str(row_hash) == schedule_hash(schedule_grid)
+
+
+def _row_test_indices_hash_or_legacy_full_test(
+    row: Mapping[str, Any],
+    *,
+    checkpoint: Mapping[str, Any],
+    expected_eval_examples: int,
+    expected_test_indices_hash: str,
+) -> str:
+    if row.get("test_indices_hash") is not None:
+        return str(row["test_indices_hash"])
+    if row.get("test_indices") is not None:
+        return _indices_hash([int(idx) for idx in row["test_indices"]])
+    if checkpoint.get("splits") is None or checkpoint["splits"].get("test") is None:
+        return ""
+    full_test_size = len(checkpoint["splits"]["test"])
+    if int(row.get("eval_examples", -1)) == int(expected_eval_examples) == int(full_test_size):
+        return str(expected_test_indices_hash)
+    return ""
 
 
 def _final_row_base_payload(
@@ -1107,6 +1192,11 @@ def _final_rows_for_cell(
             if cached is not None:
                 by_key[uniform_key] = cached
             else:
+                print(
+                    f"[ppo-bandit] final eval dataset={dataset} nfe={target_nfe} solver={solver_key} "
+                    f"schedule=uniform seed={seed} examples={len(test_ds)}",
+                    flush=True,
+                )
                 metrics = _evaluate_schedule(
                     core,
                     checkpoint,
@@ -1175,6 +1265,11 @@ def _final_rows_for_cell(
                 by_key[key] = cached
                 write_json({"artifact": "ppo_bandit_final_comparison_rows_v1", "rows": list(by_key.values())}, final_path)
                 continue
+            print(
+                f"[ppo-bandit] final eval dataset={dataset} nfe={target_nfe} solver={solver_key} "
+                f"schedule={schedule_key} seed={seed} examples={len(test_ds)}",
+                flush=True,
+            )
             metrics = _evaluate_schedule(
                 core,
                 checkpoint,

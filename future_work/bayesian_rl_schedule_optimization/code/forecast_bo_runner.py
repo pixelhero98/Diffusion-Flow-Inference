@@ -819,7 +819,12 @@ def _matching_cached_final_row(
         checkpoint_id = _row_checkpoint_id(row)
         if checkpoint_id is None or checkpoint_id != str(checkpoint["checkpoint_id"]):
             continue
-        if str(row.get("test_indices_hash", "")) != str(expected_test_indices_hash):
+        if _row_test_indices_hash_or_legacy_full_test(
+            row,
+            checkpoint=checkpoint,
+            expected_eval_examples=int(expected_eval_examples),
+            expected_test_indices_hash=str(expected_test_indices_hash),
+        ) != str(expected_test_indices_hash):
             continue
         if _row_schedule_hash(row) != expected_hash:
             continue
@@ -857,9 +862,33 @@ def _final_row_matches_current(
         return False
     if int(row.get("eval_examples", -1)) != int(expected_eval_examples):
         return False
-    if str(row.get("test_indices_hash", "")) != str(expected_test_indices_hash):
+    if _row_test_indices_hash_or_legacy_full_test(
+        row,
+        checkpoint=checkpoint,
+        expected_eval_examples=int(expected_eval_examples),
+        expected_test_indices_hash=str(expected_test_indices_hash),
+    ) != str(expected_test_indices_hash):
         return False
     return _row_schedule_hash(row) == schedule_hash(schedule_grid)
+
+
+def _row_test_indices_hash_or_legacy_full_test(
+    row: Mapping[str, Any],
+    *,
+    checkpoint: Mapping[str, Any],
+    expected_eval_examples: int,
+    expected_test_indices_hash: str,
+) -> str:
+    if row.get("test_indices_hash") is not None:
+        return str(row["test_indices_hash"])
+    if row.get("test_indices") is not None:
+        return indices_hash([int(idx) for idx in row["test_indices"]])
+    if checkpoint.get("splits") is None or checkpoint["splits"].get("test") is None:
+        return ""
+    full_test_size = len(checkpoint["splits"]["test"])
+    if int(row.get("eval_examples", -1)) == int(expected_eval_examples) == int(full_test_size):
+        return str(expected_test_indices_hash)
+    return ""
 
 
 def _final_row_base_payload(
