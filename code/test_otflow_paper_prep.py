@@ -7,6 +7,7 @@ from pathlib import Path
 
 import diffusion_flow_time_reparameterization as runner
 from diffusion_flow_schedules import build_schedule_grid
+from fm_backbone_registry import materialize_backbone_manifest
 from otflow_paper_registry import (
     BASELINE_SCHEDULE_KEYS,
     METHOD_KEY,
@@ -268,11 +269,18 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
         self.assertFalse((PROJECT_ROOT / "code" / "old_code").exists())
         self.assertFalse((PROJECT_ROOT / "old_code").exists())
 
-    def test_backbone_manifest_keeps_40_ready_artifacts(self) -> None:
-        manifest = PROJECT_ROOT / "outputs" / "backbone_matrix" / "backbone_manifest.json"
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
-        self.assertEqual(int(payload.get("ready_count", 0)), 40)
-        self.assertEqual(int(payload.get("missing_count", 0)), 0)
+    def test_backbone_manifest_tracks_40_active_artifacts_without_private_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            payload = materialize_backbone_manifest(
+                matrix_root=root / "matrix",
+                otflow_reuse_root=root / "reuse",
+                imported_backbone_root=root / "imported",
+                write_path=root / "manifest.json",
+            )
+        self.assertEqual(int(payload.get("artifact_count", 0)), 40)
+        self.assertEqual(int(payload.get("ready_count", -1)), 0)
+        self.assertEqual(int(payload.get("missing_count", 0)), 40)
 
 
 if __name__ == "__main__":
