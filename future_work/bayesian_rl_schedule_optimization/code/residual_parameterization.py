@@ -7,9 +7,7 @@ import numpy as np
 
 DEFAULT_SMALL_KL_BAND: Tuple[float, float] = (0.005, 0.02)
 DEFAULT_MEDIUM_KL_BAND: Tuple[float, float] = (0.02, 0.08)
-LEGACY_BASIS_BUMPS: Tuple[float, ...] = (1.0 / 3.0, 2.0 / 3.0)
 DEFAULT_BASIS_BUMPS: Tuple[float, ...] = (0.25, 0.50, 0.75)
-LEGACY_BASIS_KIND = "tilt_curvature_two_local_bumps"
 DEFAULT_BASIS_KIND = "tilt_curvature_three_local_bumps"
 FORECAST_AVG_RELATIVE_OBJECTIVE = "forecast_avg_relative_crps_mase"
 PROVIDED_METRIC_OBJECTIVE = "provided_metric_val"
@@ -17,6 +15,27 @@ FORECAST_METRIC_FIELDS: Tuple[str, ...] = ("crps", "mase", "uniform_crps", "unif
 FORECAST_CANDIDATE_METRIC_FIELDS: Tuple[str, ...] = ("crps", "mase")
 FORECAST_BASELINE_FIELDS: Tuple[str, ...] = ("uniform_crps", "uniform_mase")
 BASELINE_MATCH_TOL = 1e-10
+
+
+def normalize_kl_to_reference(value: Any, *, tol: float = 1e-12) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("kl_to_reference must be a finite number.") from exc
+    if not np.isfinite(out):
+        raise ValueError("kl_to_reference must be finite.")
+    if out < 0.0:
+        if abs(out) <= float(tol):
+            return 0.0
+        raise ValueError(f"kl_to_reference must be nonnegative, got {value}.")
+    return out
+
+
+def validate_n_initial(n_initial: int) -> int:
+    value = int(n_initial)
+    if value < 8 or value > 16:
+        raise ValueError(f"n_initial must be in [8, 16], got {n_initial}.")
+    return value
 
 
 def validate_interval_probabilities(q: Sequence[float], *, name: str = "q") -> np.ndarray:
@@ -53,20 +72,16 @@ def _standardize_column(col: np.ndarray, weights: np.ndarray) -> np.ndarray:
 
 def basis_bump_centers_for_dim(theta_dim: int) -> Tuple[float, ...]:
     dim = int(theta_dim)
-    if dim == 4:
-        return LEGACY_BASIS_BUMPS
     if dim == 5:
         return DEFAULT_BASIS_BUMPS
-    raise ValueError(f"Unsupported residual theta dimension {theta_dim}; expected 4 or 5.")
+    raise ValueError(f"Unsupported residual theta dimension {theta_dim}; expected 5.")
 
 
 def basis_kind_for_dim(theta_dim: int) -> str:
     dim = int(theta_dim)
-    if dim == 4:
-        return LEGACY_BASIS_KIND
     if dim == 5:
         return DEFAULT_BASIS_KIND
-    raise ValueError(f"Unsupported residual theta dimension {theta_dim}; expected 4 or 5.")
+    raise ValueError(f"Unsupported residual theta dimension {theta_dim}; expected 5.")
 
 
 def build_residual_basis(
@@ -125,7 +140,8 @@ def kl_divergence(q: Sequence[float], q_ref: Sequence[float]) -> float:
     q0 = validate_interval_probabilities(q_ref, name="q_ref")
     if q_arr.size != q0.size:
         raise ValueError(f"q and q_ref must have the same length, got {q_arr.size} and {q0.size}.")
-    return float(np.sum(q_arr * (np.log(q_arr) - np.log(q0))))
+    value = float(np.sum(q_arr * (np.log(q_arr) - np.log(q0))))
+    return normalize_kl_to_reference(value)
 
 
 def theta_to_schedule_record(
@@ -198,9 +214,7 @@ def _target_kl_values(
     medium_kl: Tuple[float, float],
     seed: int,
 ) -> List[Tuple[str, float]]:
-    n = int(n_initial)
-    if n < 8 or n > 16:
-        raise ValueError(f"n_initial must be in [8, 16], got {n_initial}.")
+    n = validate_n_initial(n_initial)
     rng = np.random.default_rng(int(seed) + 97)
     n_small = n // 2
     n_medium = n - n_small
@@ -218,6 +232,7 @@ def generate_initial_perturbations(
     seed: int = 0,
     use_sobol: bool = True,
 ) -> Dict[str, Any]:
+    n_initial = validate_n_initial(n_initial)
     q_ref = validate_interval_probabilities(reference["q_ref"], name="q_ref")
     basis = build_residual_basis(q_ref.size, q_ref=q_ref)
     directions = _direction_samples(int(n_initial), basis.shape[1], seed=int(seed), use_sobol=bool(use_sobol))
@@ -247,7 +262,8 @@ def generate_initial_perturbations(
 
 
 def observation_objective(metric_val: float, kl_to_reference: float, *, lambda_kl: float = 0.05) -> float:
-    return float(-float(metric_val) - float(lambda_kl) * float(kl_to_reference))
+    kl = normalize_kl_to_reference(kl_to_reference)
+    return float(-float(metric_val) - float(lambda_kl) * kl)
 
 
 def _finite_float(value: Any, *, name: str) -> float:
@@ -328,14 +344,13 @@ def forecast_average_relative_metric(
     if mase < 0.0:
         raise ValueError(f"mase must be nonnegative, got {mase}.")
     if uniform_baseline is None:
-        baseline = _row_uniform_baseline(row)
-    else:
-        missing_baseline = [field for field in FORECAST_BASELINE_FIELDS if uniform_baseline.get(field) is None]
-        if missing_baseline:
-            raise ValueError(f"uniform_baseline requires uniform_crps and uniform_mase fields; missing {missing_baseline}.")
-        baseline = _uniform_baseline_pair(uniform_baseline["uniform_crps"], uniform_baseline["uniform_mase"])
-        if any(row.get(field) is not None for field in FORECAST_BASELINE_FIELDS):
-            _require_matching_uniform_baseline(_row_uniform_baseline(row), baseline, context="row-level")
+        raise ValueError("Forecast observations with crps/mase require a session uniform_baseline.")
+    missing_baseline = [field for field in FORECAST_BASELINE_FIELDS if uniform_baseline.get(field) is None]
+    if missing_baseline:
+        raise ValueError(f"uniform_baseline requires uniform_crps and uniform_mase fields; missing {missing_baseline}.")
+    baseline = _uniform_baseline_pair(uniform_baseline["uniform_crps"], uniform_baseline["uniform_mase"])
+    if any(row.get(field) is not None for field in FORECAST_BASELINE_FIELDS):
+        _require_matching_uniform_baseline(_row_uniform_baseline(row), baseline, context="row-level")
     uniform_crps = float(baseline["uniform_crps"])
     uniform_mase = float(baseline["uniform_mase"])
     relative_crps_ratio = float(crps / uniform_crps)
@@ -364,7 +379,9 @@ def metric_payload_from_observation(
             "metric_val": _finite_float(row["metric_val"], name="metric_val"),
             "objective_type": str(row.get("objective_type", PROVIDED_METRIC_OBJECTIVE)),
         }
-    if uniform_baseline is not None or any(row.get(field) is not None for field in FORECAST_METRIC_FIELDS):
+    if any(row.get(field) is not None for field in FORECAST_METRIC_FIELDS):
+        if uniform_baseline is None:
+            raise ValueError("Forecast observations with crps/mase require a session uniform_baseline.")
         metric_payload = forecast_average_relative_metric(row, uniform_baseline=uniform_baseline)
         metric_payload["objective_type"] = FORECAST_AVG_RELATIVE_OBJECTIVE
         return metric_payload
@@ -381,20 +398,12 @@ def normalize_observations(
     session_uniform_baseline = uniform_baseline_from_payload(observations_payload)
     rows = observations_payload.get("observations", observations_payload) if isinstance(observations_payload, Mapping) else observations_payload
     out: List[Dict[str, Any]] = []
-    legacy_uniform_baseline: Optional[Dict[str, float]] = None
     for idx, row in enumerate(rows):
         payload = dict(row)
         theta = np.asarray(payload["theta"], dtype=np.float64)
         record = theta_to_schedule_record(q_ref, theta, basis=basis)
-        kl = float(payload.get("kl_to_reference", record["kl_to_reference"]))
+        kl = normalize_kl_to_reference(payload.get("kl_to_reference", record["kl_to_reference"]))
         metric_payload = metric_payload_from_observation(payload, uniform_baseline=session_uniform_baseline)
-        if metric_payload.get("objective_type") == FORECAST_AVG_RELATIVE_OBJECTIVE:
-            row_baseline = {field: float(metric_payload[field]) for field in FORECAST_BASELINE_FIELDS}
-            if session_uniform_baseline is None:
-                if legacy_uniform_baseline is None:
-                    legacy_uniform_baseline = row_baseline
-                else:
-                    _require_matching_uniform_baseline(row_baseline, legacy_uniform_baseline, context="legacy row-level")
         metric_val = float(metric_payload["metric_val"])
         objective = float(payload.get("objective_value", observation_objective(metric_val, kl, lambda_kl=lambda_kl)))
         payload.update(record)

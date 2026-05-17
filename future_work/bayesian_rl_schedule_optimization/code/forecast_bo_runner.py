@@ -20,6 +20,7 @@ from residual_parameterization import (
     normalize_observations,
     observation_objective,
     theta_to_schedule_record,
+    validate_n_initial,
 )
 
 
@@ -35,7 +36,14 @@ DETERMINISTIC_COMPARISON_SCHEDULE_KEYS: Tuple[str, ...] = (
 )
 GENERATED_COMPARISON_SCHEDULE_KEYS: Tuple[str, ...] = ("ser_ptg_reference", "bo_best")
 REFERENCE_CANDIDATE_ID = "reference_center"
-TEST_BASELINE_REUSE_KEYS: Tuple[str, ...] = ("uniform", "ays", "gits", "ots", "ser_ptg_reference")
+TEST_BASELINE_REUSE_KEYS: Tuple[str, ...] = (
+    "uniform",
+    "late_power_3",
+    "ays",
+    "gits",
+    "ots",
+    "ser_ptg_reference",
+)
 
 
 class _IndexSubset:
@@ -154,11 +162,16 @@ def indices_hash(indices: Sequence[int]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def stable_fingerprint(payload: Any) -> str:
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def candidate_budget_breakdown(bo_budget: int, *, n_initial: int = 16) -> Dict[str, int]:
     budget = int(bo_budget)
     if budget <= 0:
         raise ValueError(f"bo_budget must be positive, got {bo_budget}.")
-    initial = min(max(0, budget - 1), int(n_initial))
+    initial = min(max(0, budget - 1), validate_n_initial(n_initial))
     bo = max(0, budget - 1 - initial)
     return {"reference": 1, "initial": int(initial), "bo": int(bo), "total": int(1 + initial + bo)}
 
@@ -167,12 +180,38 @@ def observed_candidate_ids(observations_payload: Mapping[str, Any]) -> set[str]:
     return {str(row.get("candidate_id")) for row in observations_payload.get("observations", []) if row.get("candidate_id")}
 
 
+def observed_schedule_hashes(observations_payload: Mapping[str, Any]) -> set[str]:
+    hashes: set[str] = set()
+    for row in observations_payload.get("observations", []):
+        row_hash = row.get("schedule_hash")
+        if row_hash is None and row.get("schedule_grid") is not None:
+            row_hash = schedule_hash(row["schedule_grid"])
+        if row_hash is not None:
+            hashes.add(str(row_hash))
+    return hashes
+
+
 def pending_candidate_records(
     candidates: Sequence[Mapping[str, Any]],
     observations_payload: Mapping[str, Any],
 ) -> List[Dict[str, Any]]:
-    seen = observed_candidate_ids(observations_payload)
-    return [dict(row) for row in candidates if str(row.get("candidate_id")) not in seen]
+    seen_ids = observed_candidate_ids(observations_payload)
+    seen_hashes = observed_schedule_hashes(observations_payload)
+    pending: List[Dict[str, Any]] = []
+    for row in candidates:
+        candidate_id = str(row.get("candidate_id"))
+        if candidate_id in seen_ids:
+            continue
+        row_hash = row.get("schedule_hash")
+        if row_hash is None and row.get("schedule_grid") is not None:
+            row_hash = schedule_hash(row["schedule_grid"])
+        if row_hash is not None and str(row_hash) in seen_hashes:
+            continue
+        pending.append(dict(row))
+        seen_ids.add(candidate_id)
+        if row_hash is not None:
+            seen_hashes.add(str(row_hash))
+    return pending
 
 
 def make_observation_payload(
@@ -270,27 +309,17 @@ def write_csv(rows: Sequence[Mapping[str, Any]], path: str | Path) -> None:
 
 def _core_imports() -> Dict[str, Any]:
     project_root = Path(__file__).resolve().parents[3]
-    legacy_code_dir = project_root / "code"
-    if legacy_code_dir.exists() and str(legacy_code_dir) not in sys.path:
-        sys.path.insert(0, str(legacy_code_dir))
-    try:
-        from otflow_evaluation_support import (
-            SOLVER_RUNTIME_NAMES,
-            collect_forecast_calibration,
-            evaluate_forecast_schedule,
-            load_forecast_checkpoint_splits,
-            solver_macro_steps,
-        )
-        from diffusion_flow_schedules import build_schedule_grid
-    except ImportError:
-        from diffusion_flow_inference.evaluation.support import (
-            SOLVER_RUNTIME_NAMES,
-            collect_forecast_calibration,
-            evaluate_forecast_schedule,
-            load_forecast_checkpoint_splits,
-            solver_macro_steps,
-        )
-        from diffusion_flow_inference.schedules.diffusion_flow import build_schedule_grid
+    core_code_dir = project_root / "code"
+    if core_code_dir.exists() and str(core_code_dir) not in sys.path:
+        sys.path.insert(0, str(core_code_dir))
+    from otflow_evaluation_support import (
+        SOLVER_RUNTIME_NAMES,
+        collect_forecast_calibration,
+        evaluate_forecast_schedule,
+        load_forecast_checkpoint_splits,
+        solver_macro_steps,
+    )
+    from diffusion_flow_schedules import build_schedule_grid
 
     return {
         "SOLVER_RUNTIME_NAMES": SOLVER_RUNTIME_NAMES,
@@ -320,6 +349,56 @@ def _load_checkpoint(args: argparse.Namespace, workspace_root: Path, device: Any
     )
 
 
+def _reference_checkpoint_id(reference: Mapping[str, Any]) -> Optional[str]:
+    if reference.get("checkpoint_id") is not None:
+        return str(reference["checkpoint_id"])
+    if reference.get("source_checkpoint_id") is not None:
+        return str(reference["source_checkpoint_id"])
+    return None
+
+
+def _reference_matches_current(
+    reference: Mapping[str, Any],
+    *,
+    args: argparse.Namespace,
+    checkpoint: Mapping[str, Any],
+    solver_key: str,
+    runtime_nfe: int,
+    calibration_indices: Sequence[int],
+) -> bool:
+    if str(reference.get("dataset")) != str(args.dataset):
+        return False
+    if str(reference.get("solver_key")) != str(solver_key):
+        return False
+    if int(reference.get("target_nfe", -1)) != int(args.target_nfe):
+        return False
+    if int(reference.get("runtime_nfe", -1)) != int(runtime_nfe):
+        return False
+    checkpoint_id = _reference_checkpoint_id(reference)
+    if checkpoint_id is None or checkpoint_id != str(checkpoint["checkpoint_id"]):
+        return False
+    if reference.get("train_steps") is not None and int(reference["train_steps"]) != int(checkpoint["train_steps"]):
+        return False
+    if reference.get("reference_macro_factor") is None:
+        return False
+    if abs(float(reference["reference_macro_factor"]) - float(args.reference_macro_factor)) > 1e-12:
+        return False
+    if reference.get("density_floor_eta") is None:
+        return False
+    if abs(float(reference["density_floor_eta"]) - float(args.density_floor_eta)) > 1e-12:
+        return False
+    if reference.get("calibration_trace_samples") is not None and int(reference["calibration_trace_samples"]) != int(args.calibration_trace_samples):
+        return False
+    if [int(idx) for idx in reference.get("calibration_indices", [])] != [int(idx) for idx in calibration_indices]:
+        return False
+    if reference.get("schedule_grid") is None:
+        return False
+    expected_hash = schedule_hash(reference["schedule_grid"])
+    if reference.get("schedule_hash") is not None and str(reference["schedule_hash"]) != expected_hash:
+        return False
+    return True
+
+
 def _build_reference_schedule(
     *,
     args: argparse.Namespace,
@@ -332,12 +411,20 @@ def _build_reference_schedule(
 ) -> Dict[str, Any]:
     core = _core_imports()
     reference_path = solver_out / "reference_schedule.json"
+    runtime_nfe = int(core["solver_macro_steps"](str(solver_key), int(args.target_nfe)))
     if resume and reference_path.exists():
         reference = load_json(reference_path)
         reference.setdefault("schedule_hash", schedule_hash(reference["schedule_grid"]))
-        return reference
+        if _reference_matches_current(
+            reference,
+            args=args,
+            checkpoint=checkpoint,
+            solver_key=str(solver_key),
+            runtime_nfe=int(runtime_nfe),
+            calibration_indices=calibration_subset.indices,
+        ):
+            return reference
 
-    runtime_nfe = int(core["solver_macro_steps"](str(solver_key), int(args.target_nfe)))
     reference_macro_steps = max(32, int(round(float(args.reference_macro_factor) * float(runtime_nfe))))
     runtime_solver = core["SOLVER_RUNTIME_NAMES"][str(solver_key)]
     calibration = core["collect_forecast_calibration"](
@@ -366,7 +453,6 @@ def _build_reference_schedule(
         "validation_info_growth_trace": calibration["info_growth_hardness_by_step"],
         "validation_oracle_local_error_trace": calibration["oracle_local_error_by_step"],
         "validation_local_defect_trace": [float(x) for x in local_defect.tolist()],
-        "checkpoint_path": str(checkpoint["checkpoint_path"]),
         "checkpoint_id": str(checkpoint["checkpoint_id"]),
         "train_steps": int(checkpoint["train_steps"]),
         "train_budget_label": str(checkpoint["train_budget_label"]),
@@ -377,7 +463,12 @@ def _build_reference_schedule(
             "reference_macro_factor": float(args.reference_macro_factor),
             "reference_macro_steps": int(reference_macro_steps),
             "calibration_indices": list(calibration_subset.indices),
+            "calibration_indices_hash": indices_hash(calibration_subset.indices),
             "calibration_windows": int(len(calibration_subset)),
+            "calibration_trace_samples": int(args.calibration_trace_samples),
+            "checkpoint_id": str(checkpoint["checkpoint_id"]),
+            "train_steps": int(checkpoint["train_steps"]),
+            "train_budget_label": str(checkpoint["train_budget_label"]),
             "schedule_hash": schedule_hash(reference["schedule_grid"]),
         }
     )
@@ -401,6 +492,112 @@ def _initial_candidates(reference: Mapping[str, Any], *, n_initial: int, seed: i
         item["source"] = "initial_sobol_kl_perturbation"
         rows.append(item)
     return rows
+
+
+def _observations_match_default_basis(payload: Mapping[str, Any], reference: Mapping[str, Any]) -> bool:
+    q_ref = np.asarray(reference["q_ref"], dtype=np.float64)
+    expected_dim = int(build_residual_basis(q_ref.size, q_ref=q_ref).shape[1])
+    payload_basis = payload.get("basis_kind")
+    if payload_basis is not None and str(payload_basis) != DEFAULT_BASIS_KIND:
+        return False
+    payload_dim = payload.get("basis_dim")
+    if payload_dim is not None and int(payload_dim) != expected_dim:
+        return False
+    for row in payload.get("observations", []):
+        row_basis = row.get("basis_kind")
+        if row_basis is not None and str(row_basis) != DEFAULT_BASIS_KIND:
+            return False
+        row_dim = row.get("basis_dim")
+        if row_dim is not None and int(row_dim) != expected_dim:
+            return False
+        theta = row.get("theta")
+        if theta is not None and len(theta) != expected_dim:
+            return False
+    return True
+
+
+def _bo_observation_run_metadata(
+    *,
+    args: argparse.Namespace,
+    checkpoint: Mapping[str, Any],
+    reference: Mapping[str, Any],
+    bo_val_subset: _IndexSubset,
+    solver_key: str,
+) -> Dict[str, Any]:
+    return {
+        "artifact": "forecast_bo_observation_run_metadata_v1",
+        "dataset": str(args.dataset),
+        "solver_key": str(solver_key),
+        "target_nfe": int(args.target_nfe),
+        "runtime_nfe": int(reference["runtime_nfe"]),
+        "checkpoint_id": str(checkpoint["checkpoint_id"]),
+        "train_steps": int(checkpoint["train_steps"]),
+        "reference_schedule_hash": str(reference.get("schedule_hash") or schedule_hash(reference["schedule_grid"])),
+        "reference_macro_factor": float(args.reference_macro_factor),
+        "calibration_fraction": float(args.calibration_fraction),
+        "bo_validation_indices_hash": indices_hash(bo_val_subset.indices),
+        "bo_validation_windows": int(len(bo_val_subset)),
+        "num_eval_samples": int(args.num_eval_samples),
+        "bo_budget": int(args.bo_budget),
+        "n_initial": validate_n_initial(args.n_initial),
+        "bo_batch_size": int(args.bo_batch_size),
+        "lambda_kl": float(args.lambda_kl),
+        "bo_seed": int(args.bo_seed),
+        "theta_bound": float(args.theta_bound),
+        "raw_samples": int(args.raw_samples),
+        "num_restarts": int(args.num_restarts),
+        "mc_samples": int(args.mc_samples),
+        "density_floor_eta": float(args.density_floor_eta),
+        "calibration_trace_samples": int(args.calibration_trace_samples),
+        "basis_kind": DEFAULT_BASIS_KIND,
+        "basis_dim": int(build_residual_basis(len(reference["q_ref"]), q_ref=reference["q_ref"]).shape[1]),
+        "device": str(args.device),
+    }
+
+
+def _payload_matches_run_metadata(payload: Mapping[str, Any], metadata: Mapping[str, Any]) -> bool:
+    return str(payload.get("run_fingerprint", "")) == stable_fingerprint(metadata) and payload.get("run_metadata") == dict(metadata)
+
+
+def _source_candidate_hashes(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    hashes: List[str] = []
+    for row in rows:
+        row_hash = row.get("schedule_hash")
+        if row_hash is None and row.get("schedule_grid") is not None:
+            row_hash = schedule_hash(row["schedule_grid"])
+        hashes.append(str(row_hash))
+    return hashes
+
+
+def _bo_confirmation_run_metadata(
+    *,
+    args: argparse.Namespace,
+    checkpoint: Mapping[str, Any],
+    reference: Mapping[str, Any],
+    observations: Mapping[str, Any],
+    confirm_subset: _IndexSubset,
+    solver_key: str,
+    top_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "artifact": "forecast_bo_confirmation_run_metadata_v1",
+        "dataset": str(args.dataset),
+        "solver_key": str(solver_key),
+        "target_nfe": int(args.target_nfe),
+        "runtime_nfe": int(reference["runtime_nfe"]),
+        "checkpoint_id": str(checkpoint["checkpoint_id"]),
+        "reference_schedule_hash": str(reference.get("schedule_hash") or schedule_hash(reference["schedule_grid"])),
+        "observation_run_fingerprint": str(observations.get("run_fingerprint", "")),
+        "source_candidate_ids": [str(row.get("candidate_id", row.get("observation_id", ""))) for row in top_rows],
+        "source_candidate_hashes": _source_candidate_hashes(top_rows),
+        "selection_rule": f"top_{int(args.confirm_top_k)}_by_bo_validation_objective",
+        "confirmation_indices_hash": indices_hash(confirm_subset.indices),
+        "confirmation_windows": int(len(confirm_subset)),
+        "num_eval_samples": int(args.num_eval_samples),
+        "lambda_kl": float(args.lambda_kl),
+        "bo_seed": int(args.bo_seed),
+        "basis_kind": DEFAULT_BASIS_KIND,
+    }
 
 
 def _evaluate_schedule(core: Mapping[str, Any], checkpoint: Mapping[str, Any], ds: Any, *, solver_key: str, runtime_nfe: int, time_grid: Sequence[float], num_eval_samples: int, seed: int) -> Dict[str, Any]:
@@ -469,8 +666,17 @@ def _load_or_create_observations(
     resume: bool,
 ) -> Dict[str, Any]:
     observations_path = solver_out / "observations.json"
+    run_metadata = _bo_observation_run_metadata(
+        args=args,
+        checkpoint=checkpoint,
+        reference=reference,
+        bo_val_subset=bo_val_subset,
+        solver_key=str(solver_key),
+    )
     if resume and observations_path.exists():
-        return load_json(observations_path)
+        payload = load_json(observations_path)
+        if _observations_match_default_basis(payload, reference) and _payload_matches_run_metadata(payload, run_metadata):
+            return payload
 
     uniform_grid = core["build_schedule_grid"]("uniform", int(reference["runtime_nfe"]))
     uniform_metrics = _evaluate_schedule(
@@ -496,6 +702,9 @@ def _load_or_create_observations(
             "bo_validation_indices": list(bo_val_subset.indices),
             "bo_validation_windows": int(len(bo_val_subset)),
             "basis_kind": DEFAULT_BASIS_KIND,
+            "basis_dim": int(build_residual_basis(len(reference["q_ref"]), q_ref=reference["q_ref"]).shape[1]),
+            "run_metadata": run_metadata,
+            "run_fingerprint": stable_fingerprint(run_metadata),
         }
     )
     write_json(payload, observations_path)
@@ -520,13 +729,22 @@ def _confirmation_best_observation(
     resume: bool,
 ) -> Dict[str, Any]:
     confirm_path = solver_out / "confirmation_rows.json"
+    top_rows = select_top_observations(observations, top_k=int(args.confirm_top_k))
+    run_metadata = _bo_confirmation_run_metadata(
+        args=args,
+        checkpoint=checkpoint,
+        solver_key=str(solver_key),
+        reference=reference,
+        observations=observations,
+        confirm_subset=confirm_subset,
+        top_rows=top_rows,
+    )
     if resume and confirm_path.exists():
         payload = load_json(confirm_path)
         rows = payload.get("rows", [])
-        if rows:
+        if rows and _payload_matches_run_metadata(payload, run_metadata):
             return max(rows, key=lambda row: (float(row["objective_value"]), -float(row.get("metric_val", 0.0))))
 
-    top_rows = select_top_observations(observations, top_k=int(args.confirm_top_k))
     uniform_grid = core["build_schedule_grid"]("uniform", int(reference["runtime_nfe"]))
     uniform_metrics = _evaluate_schedule(
         core,
@@ -548,11 +766,12 @@ def _confirmation_best_observation(
     confirm_payload.update(
         {
             "artifact": "forecast_bo_confirmation_rows_v1",
-            "selected_from_observations_path": str(solver_out / "observations.json"),
             "selection_rule": f"top_{int(args.confirm_top_k)}_by_bo_validation_objective",
             "confirmation_indices": list(confirm_subset.indices),
             "confirmation_windows": int(len(confirm_subset)),
             "basis_kind": DEFAULT_BASIS_KIND,
+            "run_metadata": run_metadata,
+            "run_fingerprint": stable_fingerprint(run_metadata),
         }
     )
     rows: List[Dict[str, Any]] = []
@@ -678,9 +897,17 @@ def _run_solver_bo(
             n_mc_samples=int(args.mc_samples),
             seed=int(args.bo_seed) + len(observations.get("observations", [])),
         )
+        seen_hashes = observed_schedule_hashes(observations)
+        accepted_in_batch: set[str] = set()
+        before_batch_count = len(observations.get("observations", []))
         for candidate in batch["candidates"]:
             if len(observations.get("observations", [])) >= budget:
                 break
+            candidate_hash = candidate.get("schedule_hash")
+            if candidate_hash is None and candidate.get("schedule_grid") is not None:
+                candidate_hash = schedule_hash(candidate["schedule_grid"])
+            if candidate_hash is not None and (str(candidate_hash) in seen_hashes or str(candidate_hash) in accepted_in_batch):
+                continue
             seq = len(observations.get("observations", []))
             item = dict(candidate)
             item["candidate_id"] = f"bo_{seq:03d}"
@@ -697,6 +924,10 @@ def _run_solver_bo(
             )
             row = _normalize_candidate_observation(reference, observations, item, metrics, lambda_kl=float(args.lambda_kl))
             _append_observation(observations, row, observations_path)
+            accepted_in_batch.add(str(row["schedule_hash"]))
+            seen_hashes.add(str(row["schedule_hash"]))
+        if len(observations.get("observations", [])) == before_batch_count:
+            raise RuntimeError("BO candidate suggestion produced only duplicate schedule hashes.")
 
     best = _confirmation_best_observation(
         args=args,
@@ -753,7 +984,6 @@ def _load_cached_final_rows(cache_roots: Sequence[Path]) -> List[Dict[str, Any]]
         run_config = load_json(run_config_path) if run_config_path.exists() else {}
         for row in _load_final_rows(final_path):
             item = dict(row)
-            item["_cache_source"] = str(Path(root))
             item["_cache_run_config"] = run_config
             rows.append(item)
     return rows
@@ -769,8 +999,6 @@ def _cache_roots(args: argparse.Namespace, workspace_root: Path) -> List[Path]:
 def _row_schedule_hash(row: Mapping[str, Any]) -> Optional[str]:
     if row.get("schedule_hash") is not None:
         return str(row["schedule_hash"])
-    if row.get("schedule_grid") is not None:
-        return schedule_hash(row["schedule_grid"])
     return None
 
 
@@ -819,22 +1047,14 @@ def _matching_cached_final_row(
         checkpoint_id = _row_checkpoint_id(row)
         if checkpoint_id is None or checkpoint_id != str(checkpoint["checkpoint_id"]):
             continue
-        if _row_test_indices_hash_or_legacy_full_test(
-            row,
-            checkpoint=checkpoint,
-            expected_eval_examples=int(expected_eval_examples),
-            expected_test_indices_hash=str(expected_test_indices_hash),
-        ) != str(expected_test_indices_hash):
+        if _row_test_indices_hash(row) != str(expected_test_indices_hash):
             continue
         if _row_schedule_hash(row) != expected_hash:
             continue
         reused = {key: value for key, value in dict(row).items() if not str(key).startswith("_cache_")}
         reused["reused_from_cache"] = True
-        reused["cache_source"] = str(row.get("_cache_source", ""))
         reused["schedule_hash"] = expected_hash
         reused["checkpoint_id"] = str(checkpoint["checkpoint_id"])
-        if checkpoint.get("checkpoint_path") is not None:
-            reused["checkpoint_path"] = str(checkpoint["checkpoint_path"])
         if checkpoint.get("train_steps") is not None:
             reused["train_steps"] = int(checkpoint["train_steps"])
         if checkpoint.get("train_budget_label") is not None:
@@ -862,32 +1082,16 @@ def _final_row_matches_current(
         return False
     if int(row.get("eval_examples", -1)) != int(expected_eval_examples):
         return False
-    if _row_test_indices_hash_or_legacy_full_test(
-        row,
-        checkpoint=checkpoint,
-        expected_eval_examples=int(expected_eval_examples),
-        expected_test_indices_hash=str(expected_test_indices_hash),
-    ) != str(expected_test_indices_hash):
+    if _row_test_indices_hash(row) != str(expected_test_indices_hash):
         return False
     return _row_schedule_hash(row) == schedule_hash(schedule_grid)
 
 
-def _row_test_indices_hash_or_legacy_full_test(
-    row: Mapping[str, Any],
-    *,
-    checkpoint: Mapping[str, Any],
-    expected_eval_examples: int,
-    expected_test_indices_hash: str,
-) -> str:
+def _row_test_indices_hash(row: Mapping[str, Any]) -> str:
     if row.get("test_indices_hash") is not None:
         return str(row["test_indices_hash"])
     if row.get("test_indices") is not None:
         return indices_hash([int(idx) for idx in row["test_indices"]])
-    if checkpoint.get("splits") is None or checkpoint["splits"].get("test") is None:
-        return ""
-    full_test_size = len(checkpoint["splits"]["test"])
-    if int(row.get("eval_examples", -1)) == int(expected_eval_examples) == int(full_test_size):
-        return str(expected_test_indices_hash)
     return ""
 
 
@@ -900,7 +1104,6 @@ def _final_row_base_payload(
 ) -> Dict[str, Any]:
     return {
         "checkpoint_id": str(checkpoint["checkpoint_id"]),
-        "checkpoint_path": str(checkpoint["checkpoint_path"]),
         "train_steps": int(checkpoint["train_steps"]),
         "train_budget_label": str(checkpoint["train_budget_label"]),
         "num_eval_samples": int(num_eval_samples),
@@ -920,11 +1123,16 @@ def _run_final_comparison(
 ) -> List[Dict[str, Any]]:
     final_path = out_root / "final_comparison_rows.json"
     rows = _load_final_rows(final_path) if resume else []
-    by_key = {_final_row_key(row): dict(row) for row in rows}
-    workspace_root = resolve_workspace_path(str(args.workspace_root), Path.cwd())
-    cached_rows = _load_cached_final_rows(_cache_roots(args, workspace_root))
     comparison_schedules = parse_comparison_schedules(str(args.comparison_schedules))
     final_seeds = parse_int_csv(str(args.final_test_seeds))
+    expected_keys = {
+        (str(args.dataset), int(args.target_nfe), str(solver_key), str(schedule_key), int(seed))
+        for solver_key in solver_results
+        for schedule_key in comparison_schedules
+        for seed in final_seeds
+    }
+    rows = [row for row in rows if _final_row_key(row) in expected_keys]
+    by_key = {_final_row_key(row): dict(row) for row in rows}
     for solver_key, result in solver_results.items():
         reference = result["reference"]
         best = result["best"]["best_observation"]
@@ -961,55 +1169,40 @@ def _run_final_comparison(
             ):
                 by_key.pop(uniform_key, None)
             if uniform_key not in by_key:
-                cached = _matching_cached_final_row(
-                    cached_rows,
-                    args=args,
-                    checkpoint=checkpoint,
+                metrics = _evaluate_schedule(
+                    core,
+                    checkpoint,
+                    test_ds,
                     solver_key=str(solver_key),
-                    schedule_key="uniform",
-                    seed=int(seed),
                     runtime_nfe=runtime_nfe,
-                    schedule_grid=schedules["uniform"],
-                    expected_eval_examples=len(test_ds),
-                    expected_test_indices_hash=test_hash,
+                    time_grid=schedules["uniform"],
+                    num_eval_samples=int(args.num_eval_samples),
+                    seed=int(seed),
                 )
-                if cached is not None:
-                    by_key[uniform_key] = cached
-                else:
-                    metrics = _evaluate_schedule(
-                        core,
-                        checkpoint,
-                        test_ds,
-                        solver_key=str(solver_key),
-                        runtime_nfe=runtime_nfe,
-                        time_grid=schedules["uniform"],
+                by_key[uniform_key] = {
+                    "dataset": str(args.dataset),
+                    "solver_key": str(solver_key),
+                    "target_nfe": int(args.target_nfe),
+                    "runtime_nfe": runtime_nfe,
+                    "seed": int(seed),
+                    "schedule_key": "uniform",
+                    "schedule_grid": [float(x) for x in schedules["uniform"]],
+                    "schedule_hash": schedule_hash(schedules["uniform"]),
+                    **_final_row_base_payload(
+                        checkpoint=checkpoint,
+                        test_indices=test_indices,
+                        test_indices_hash=test_hash,
                         num_eval_samples=int(args.num_eval_samples),
-                        seed=int(seed),
-                    )
-                    by_key[uniform_key] = {
-                        "dataset": str(args.dataset),
-                        "solver_key": str(solver_key),
-                        "target_nfe": int(args.target_nfe),
-                        "runtime_nfe": runtime_nfe,
-                        "seed": int(seed),
-                        "schedule_key": "uniform",
-                        "schedule_grid": [float(x) for x in schedules["uniform"]],
-                        "schedule_hash": schedule_hash(schedules["uniform"]),
-                        **_final_row_base_payload(
-                            checkpoint=checkpoint,
-                            test_indices=test_indices,
-                            test_indices_hash=test_hash,
-                            num_eval_samples=int(args.num_eval_samples),
-                        ),
-                        "crps": float(metrics["crps"]),
-                        "mase": float(metrics["mase"]),
-                        "mse": float(metrics.get("mse", float("nan"))),
-                        "relative_crps_ratio": 1.0,
-                        "relative_mase_ratio": 1.0,
-                        "avg_relative_ratio": 1.0,
-                        "kl_to_reference": None,
-                        "eval_examples": int(metrics.get("eval_examples", 0)),
-                    }
+                    ),
+                    "crps": float(metrics["crps"]),
+                    "mase": float(metrics["mase"]),
+                    "mse": float(metrics.get("mse", float("nan"))),
+                    "relative_crps_ratio": 1.0,
+                    "relative_mase_ratio": 1.0,
+                    "avg_relative_ratio": 1.0,
+                    "kl_to_reference": None,
+                    "eval_examples": int(metrics.get("eval_examples", 0)),
+                }
                 write_json({"artifact": "forecast_bo_final_comparison_rows_v1", "rows": list(by_key.values())}, final_path)
             uniform = by_key[uniform_key]
             for schedule_key in [key for key in comparison_schedules if key != "uniform"]:
@@ -1025,22 +1218,6 @@ def _run_final_comparison(
                 ):
                     by_key.pop(key, None)
                 if key in by_key:
-                    continue
-                cached = _matching_cached_final_row(
-                    cached_rows,
-                    args=args,
-                    checkpoint=checkpoint,
-                    solver_key=str(solver_key),
-                    schedule_key=str(schedule_key),
-                    seed=int(seed),
-                    runtime_nfe=runtime_nfe,
-                    schedule_grid=schedules[schedule_key],
-                    expected_eval_examples=len(test_ds),
-                    expected_test_indices_hash=test_hash,
-                )
-                if cached is not None:
-                    by_key[key] = cached
-                    write_json({"artifact": "forecast_bo_final_comparison_rows_v1", "rows": list(by_key.values())}, final_path)
                     continue
                 metrics = _evaluate_schedule(
                     core,
@@ -1098,12 +1275,11 @@ def run_forecast_bo(args: argparse.Namespace) -> Dict[str, Any]:
     out_root.mkdir(parents=True, exist_ok=True)
     solvers = parse_csv(str(args.solvers))
     comparison_schedules = parse_comparison_schedules(str(args.comparison_schedules))
+    validate_n_initial(args.n_initial)
     device = torch.device(str(args.device))
     checkpoint = _load_checkpoint(args, workspace_root, device)
     run_config = {
         "artifact": "forecast_bo_run_config_v1",
-        "workspace_root": str(workspace_root),
-        "out_root": str(out_root),
         "dataset": str(args.dataset),
         "solvers": solvers,
         "comparison_schedules": comparison_schedules,
@@ -1111,7 +1287,16 @@ def run_forecast_bo(args: argparse.Namespace) -> Dict[str, Any]:
         "otflow_train_steps": int(args.otflow_train_steps),
         "bo_budget": int(args.bo_budget),
         "n_initial": int(args.n_initial),
+        "bo_batch_size": int(args.bo_batch_size),
+        "lambda_kl": float(args.lambda_kl),
+        "bo_seed": int(args.bo_seed),
+        "theta_bound": float(args.theta_bound),
+        "raw_samples": int(args.raw_samples),
+        "num_restarts": int(args.num_restarts),
+        "mc_samples": int(args.mc_samples),
+        "density_floor_eta": float(args.density_floor_eta),
         "basis_kind": DEFAULT_BASIS_KIND,
+        "basis_dim": 5,
         "calibration_fraction": float(args.calibration_fraction),
         "calibration_windows": int(args.calibration_windows),
         "bo_val_windows": int(args.bo_val_windows),
@@ -1119,11 +1304,18 @@ def run_forecast_bo(args: argparse.Namespace) -> Dict[str, Any]:
         "confirm_val_windows": int(args.confirm_val_windows),
         "num_eval_samples": int(args.num_eval_samples),
         "reference_macro_factor": float(args.reference_macro_factor),
+        "calibration_trace_samples": int(args.calibration_trace_samples),
         "final_test_seeds": parse_int_csv(str(args.final_test_seeds)),
         "final_test_windows": int(args.final_test_windows),
-        "baseline_cache_roots": parse_csv(str(args.baseline_cache_roots)),
+        "device": str(args.device),
         "checkpoint_id": str(checkpoint["checkpoint_id"]),
-        "checkpoint_path": str(checkpoint["checkpoint_path"]),
+        "train_steps": int(checkpoint["train_steps"]),
+        "train_budget_label": str(checkpoint["train_budget_label"]),
+        "checkpoint_metadata": {
+            "checkpoint_id": str(checkpoint["checkpoint_id"]),
+            "train_steps": int(checkpoint["train_steps"]),
+            "train_budget_label": str(checkpoint["train_budget_label"]),
+        },
     }
     write_json(run_config, out_root / "run_config.json")
     solver_results: Dict[str, Mapping[str, Any]] = {}
@@ -1152,8 +1344,6 @@ def run_forecast_bo(args: argparse.Namespace) -> Dict[str, Any]:
         "solver_observation_counts": {
             solver: int(len(result["observations"].get("observations", []))) for solver, result in solver_results.items()
         },
-        "final_summary_path": str(out_root / "final_summary.json"),
-        "final_rows_path": str(out_root / "final_comparison_rows.json"),
     }
     write_json(payload, out_root / "run_summary.json")
     return payload
@@ -1188,7 +1378,6 @@ def add_run_forecast_bo_parser(subparsers: Any) -> None:
     run.add_argument("--mc-samples", type=int, default=128)
     run.add_argument("--bo-seed", type=int, default=0)
     run.add_argument("--density-floor-eta", type=float, default=0.05)
-    run.add_argument("--baseline-cache-roots", type=str, default="")
     run.add_argument("--device", type=str, default="cuda")
     run.add_argument("--resume", action="store_true", default=True)
     run.add_argument("--no-resume", dest="resume", action="store_false")

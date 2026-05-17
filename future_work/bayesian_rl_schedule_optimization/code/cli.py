@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from botorch_bo import suggest_bo_batch
+from baseline_precompute import add_precompute_forecast_baselines_parser, run_precompute_forecast_baselines
 from forecast_bo_runner import add_run_forecast_bo_parser, run_forecast_bo
-from kl_ppo_bandit_schedule import add_run_forecast_ppo_bandit_parser, run_forecast_ppo_bandit
+from joint_progression_ppo_schedule import add_run_forecast_joint_progression_ppo_parser, run_forecast_joint_progression_ppo
 from reference_schedule import build_reference_from_payload, load_json, write_json
 from residual_parameterization import generate_initial_perturbations
 from visualize_bo_runs import add_visualize_run_parser, run_visualize_command
@@ -46,7 +47,8 @@ def build_argparser() -> argparse.ArgumentParser:
     suggest.add_argument("--seed", type=int, default=0)
 
     add_run_forecast_bo_parser(subparsers)
-    add_run_forecast_ppo_bandit_parser(subparsers)
+    add_run_forecast_joint_progression_ppo_parser(subparsers)
+    add_precompute_forecast_baselines_parser(subparsers)
     add_visualize_run_parser(subparsers)
     return parser
 
@@ -95,12 +97,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print(str(Path(args.out_json).resolve()))
         return
     if args.command == "run-forecast-bo":
-        out = run_forecast_bo(args)
-        print(str(Path(out["run_config"]["out_root"]).resolve()))
+        run_forecast_bo(args)
+        print(str(Path(args.out_root).resolve()))
         return
-    if args.command == "run-forecast-ppo-bandit":
-        out = run_forecast_ppo_bandit(args)
-        print(str(Path(out["run_config"]["out_root"]).resolve()))
+    if args.command == "run-forecast-joint-progression-ppo":
+        run_forecast_joint_progression_ppo(args)
+        print(str(Path(args.out_root).resolve()))
+        return
+    if args.command == "precompute-forecast-baselines":
+        run_precompute_forecast_baselines(args)
+        print(str(Path(args.out_root).resolve()))
         return
     if args.command == "visualize-run":
         out = run_visualize_command(args)

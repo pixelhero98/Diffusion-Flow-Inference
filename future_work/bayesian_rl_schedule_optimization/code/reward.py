@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Mapping
 
+from residual_parameterization import normalize_kl_to_reference
+
 
 DEFAULT_LAMBDA_BAD = 3.0
 
@@ -37,9 +39,7 @@ def forecast_log_ratio_reward(
         raise ValueError(f"beta_ref must be finite and nonnegative, got {beta_ref}.")
     if not math.isfinite(lambda_bad_value) or lambda_bad_value < 0.0:
         raise ValueError(f"lambda_bad must be finite and nonnegative, got {lambda_bad}.")
-    kl_value = float(kl_to_reference)
-    if not math.isfinite(kl_value) or kl_value < 0.0:
-        raise ValueError(f"kl_to_reference must be finite and nonnegative, got {kl_to_reference}.")
+    kl_value = normalize_kl_to_reference(kl_to_reference)
 
     relative_crps_ratio = float(crps_value / uniform_crps_value)
     relative_mase_ratio = float(mase_value / uniform_mase_value)

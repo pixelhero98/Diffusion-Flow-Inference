@@ -18,8 +18,6 @@ except Exception:  # pragma: no cover - lets standalone future-work tests import
 
 LOCAL_DEFECT_KEY = "validation_local_defect_trace"
 ORACLE_LOCAL_ERROR_KEY = "validation_oracle_local_error_trace"
-INFO_GROWTH_KEY = "validation_info_growth_trace"
-NATIVE_INFO_GROWTH_KEY = "info_growth_hardness_by_step"
 DEFAULT_DENSITY_FLOOR_ETA = 0.05
 DEFAULT_DEFECT_EPS = 1e-12
 
@@ -120,12 +118,7 @@ def choose_defect_trace(cell: Mapping[str, Any], *, reference_time_grid: Sequenc
         except ValueError:
             pass
 
-    info = usable(INFO_GROWTH_KEY)
-    if info is None:
-        info = usable(NATIVE_INFO_GROWTH_KEY)
-    if info is not None:
-        return info, "info_growth_fallback"
-    raise ValueError("No usable local-defect, oracle-local-error, or Info-growth trace is available.")
+    raise ValueError("No usable local-defect or oracle-local-error trace is available.")
 
 
 def reference_density_from_defect(
@@ -223,7 +216,6 @@ def build_reference_from_cell(
     return {
         "artifact": "bo_reference_schedule_v1",
         "reference_generator": "ser_ptg_local_defect_primary",
-        "fallback_strategy": "info_growth_ser_ptg",
         "trace_source": trace_source,
         "dataset": str(cell["dataset"]),
         "solver_key": solver_key,

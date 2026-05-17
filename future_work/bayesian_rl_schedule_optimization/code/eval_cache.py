@@ -25,8 +25,31 @@ class JsonlEvalCache:
         schedule_hash: str,
         seed: int,
         num_eval_samples: int,
+        dataset: Optional[str] = None,
+        target_nfe: Optional[int] = None,
+        solver_key: Optional[str] = None,
+        runtime_nfe: Optional[int] = None,
+        checkpoint_id: Optional[str] = None,
+        split_indices_hash: Optional[str] = None,
+        eval_examples: Optional[int] = None,
     ) -> str:
-        return "|".join([str(split_id), str(schedule_hash), str(seed), str(num_eval_samples)])
+        fields = [
+            str(split_id),
+            str(schedule_hash),
+            str(seed),
+            str(num_eval_samples),
+        ]
+        extras = {
+            "dataset": dataset,
+            "target_nfe": target_nfe,
+            "solver_key": solver_key,
+            "runtime_nfe": runtime_nfe,
+            "checkpoint_id": checkpoint_id,
+            "split_indices_hash": split_indices_hash,
+            "eval_examples": eval_examples,
+        }
+        fields.extend(f"{key}={value}" for key, value in sorted(extras.items()) if value is not None)
+        return "|".join(fields)
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         row = self.rows.get(str(key))

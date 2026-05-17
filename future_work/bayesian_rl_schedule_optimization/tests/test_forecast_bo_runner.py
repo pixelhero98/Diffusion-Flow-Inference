@@ -11,6 +11,7 @@ if str(CODE_DIR) not in sys.path:
 from forecast_bo_runner import (  # noqa: E402
     COMPARISON_SCHEDULE_KEYS,
     _normalize_candidate_observation,
+    _observations_match_default_basis,
     candidate_budget_breakdown,
     deterministic_validation_partition,
     make_observation_payload,
@@ -22,9 +23,11 @@ from forecast_bo_runner import (  # noqa: E402
     pending_candidate_records,
     select_best_observation,
     select_top_observations,
+    stable_fingerprint,
     summarize_final_rows,
     validate_final_comparison_coverage,
 )
+from residual_parameterization import observation_objective  # noqa: E402
 
 
 class ForecastBoRunnerTests(unittest.TestCase):
@@ -40,6 +43,12 @@ class ForecastBoRunnerTests(unittest.TestCase):
         breakdown = candidate_budget_breakdown(4, n_initial=12)
 
         self.assertEqual(breakdown, {"reference": 1, "initial": 3, "bo": 0, "total": 4})
+
+    def test_invalid_n_initial_is_rejected_before_candidate_generation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "n_initial must be in"):
+            candidate_budget_breakdown(100, n_initial=7)
+        with self.assertRaisesRegex(ValueError, "n_initial must be in"):
+            candidate_budget_breakdown(100, n_initial=17)
 
     def test_validation_partition_is_deterministic_and_disjoint(self) -> None:
         calibration, bo_validation = deterministic_validation_partition(100, calibration_fraction=0.7, seed=11)
@@ -71,17 +80,48 @@ class ForecastBoRunnerTests(unittest.TestCase):
         self.assertEqual(payload["uniform_baseline"], {"crps": 4.0, "mase": 2.0})
         self.assertEqual(payload["observations"], [])
 
+    def test_resumed_observations_must_match_default_basis_shape(self) -> None:
+        reference = {"q_ref": [0.2, 0.2, 0.2, 0.2, 0.2]}
+        good = {
+            "basis_kind": "tilt_curvature_three_local_bumps",
+            "basis_dim": 5,
+            "observations": [{"theta": [0.0, 0.1, -0.1, 0.0, 0.2]}],
+        }
+        stale = {
+            "basis_kind": "tilt_curvature_three_local_bumps",
+            "basis_dim": 6,
+            "observations": [{"theta": [0.0, 0.1, -0.1, 0.0, 0.2, 0.3]}],
+        }
+
+        self.assertTrue(_observations_match_default_basis(good, reference))
+        self.assertFalse(_observations_match_default_basis(stale, reference))
+
     def test_pending_candidate_records_skip_resumed_rows(self) -> None:
-        observations = {"observations": [{"candidate_id": "reference_center"}, {"candidate_id": "init_000"}]}
+        duplicate_grid = [0.0, 0.5, 1.0]
+        observations = {
+            "observations": [
+                {"candidate_id": "reference_center"},
+                {"candidate_id": "init_000", "schedule_grid": duplicate_grid, "schedule_hash": schedule_hash(duplicate_grid)},
+            ]
+        }
         candidates = [
             {"candidate_id": "reference_center"},
             {"candidate_id": "init_000"},
             {"candidate_id": "init_001"},
+            {"candidate_id": "init_002", "schedule_grid": duplicate_grid},
         ]
 
         pending = pending_candidate_records(candidates, observations)
 
         self.assertEqual([row["candidate_id"] for row in pending], ["init_001"])
+
+    def test_stable_fingerprint_changes_when_run_metadata_changes(self) -> None:
+        self.assertNotEqual(stable_fingerprint({"lambda_kl": 0.05}), stable_fingerprint({"lambda_kl": 0.0}))
+
+    def test_observation_objective_normalizes_tiny_negative_kl_but_rejects_real_negative(self) -> None:
+        self.assertAlmostEqual(observation_objective(1.0, -1e-16, lambda_kl=0.05), -1.0)
+        with self.assertRaisesRegex(ValueError, "kl_to_reference"):
+            observation_objective(1.0, -1e-4, lambda_kl=0.05)
 
     def test_select_best_observation_uses_validation_objective(self) -> None:
         payload = {
@@ -126,6 +166,7 @@ class ForecastBoRunnerTests(unittest.TestCase):
             "eval_examples": 862,
             "checkpoint_id": "ckpt",
             "schedule_grid": schedule,
+            "schedule_hash": schedule_hash(schedule),
             "test_indices_hash": test_hash,
         }
 
@@ -181,6 +222,7 @@ class ForecastBoRunnerTests(unittest.TestCase):
                     "eval_examples": 137,
                     "checkpoint_id": "solar_energy_10m_otflow_forecast_20k_seed0",
                     "schedule_grid": schedule,
+                    "schedule_hash": schedule_hash(schedule),
                     "test_indices_hash": test_hash,
                 }
             )

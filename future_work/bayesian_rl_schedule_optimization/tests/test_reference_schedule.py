@@ -53,7 +53,7 @@ class ReferenceScheduleTests(unittest.TestCase):
         self.assertAlmostEqual(sum(reference["q_ref"]), 1.0)
         self.assertLess(reference["q_ref"][1], 0.25)
 
-    def test_oracle_local_error_fallback_converts_to_defect(self) -> None:
+    def test_oracle_local_error_converts_to_defect(self) -> None:
         grid = [0.0, 0.25, 0.5, 0.75, 1.0]
         local_defect = [1.0, 8.0, 1.0, 1.0]
         widths = np.diff(grid)
@@ -66,16 +66,14 @@ class ReferenceScheduleTests(unittest.TestCase):
         converted = local_defect_from_oracle(oracle, grid, solver_order=1.0)
         self.assertTrue(np.allclose(converted, local_defect, atol=1e-10, rtol=1e-10))
 
-    def test_info_growth_is_last_fallback(self) -> None:
-        reference = build_reference_from_cell(
-            _cell(
-                validation_local_defect_trace=[0.0, 0.0, 0.0, 0.0],
-                validation_oracle_local_error_trace=None,
+    def test_info_growth_trace_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "local-defect or oracle-local-error"):
+            build_reference_from_cell(
+                _cell(
+                    validation_local_defect_trace=[0.0, 0.0, 0.0, 0.0],
+                    validation_oracle_local_error_trace=None,
+                )
             )
-        )
-
-        self.assertEqual(reference["trace_source"], "info_growth_fallback")
-        self.assertGreater(reference["schedule_grid"][2], 0.5)
 
     def test_inverse_cdf_places_runtime_nodes(self) -> None:
         grid = runtime_grid_from_density([0.0, 0.5, 1.0], [3.0, 1.0], runtime_nfe=4)

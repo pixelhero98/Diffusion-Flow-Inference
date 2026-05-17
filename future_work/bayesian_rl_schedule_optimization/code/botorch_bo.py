@@ -79,9 +79,16 @@ def _observation_rows(observations_payload: Mapping[str, Any] | Sequence[Mapping
 
 
 def _theta_dim_from_observations(observations_payload: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> int:
+    if isinstance(observations_payload, Mapping) and observations_payload.get("basis_dim") is not None:
+        dim = int(observations_payload["basis_dim"])
+        if dim != 5:
+            raise ValueError(f"Unsupported residual theta dimension {dim}; expected 5.")
     for row in _observation_rows(observations_payload):
         if row.get("theta") is not None:
-            return len(row["theta"])
+            dim = len(row["theta"])
+            if dim != 5:
+                raise ValueError(f"Unsupported residual theta dimension {dim}; expected 5.")
+            return dim
     return 5
 
 

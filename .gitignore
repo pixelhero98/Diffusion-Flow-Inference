@@ -2,13 +2,13 @@
 # Python/runtime caches
 __pycache__/
 .pytest_cache/
+.cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 *.py[cod]
 *$py.class
-
-# Python packaging outputs
-*.egg-info/
-build/
-dist/
 
 # Virtual environments and local environments
 .venv/
@@ -37,3 +37,7 @@ safe_resume_patch/
 *.log
 .log
 tmp_*
+*.jsonl
+build/
+dist/
+*.egg-info/

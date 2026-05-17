@@ -5,7 +5,7 @@ This sandbox is for exploring Bayesian optimization and reinforcement learning m
 The v1 workflow is offline and source-only:
 
 - Build a numerical reference schedule from an existing PTG payload.
-- Prefer SER/PTG local-defect traces; fall back to Info-growth traces only when local-defect data is unavailable.
+- Build SER/PTG references from local-defect traces or oracle-local-error traces only.
 - Generate KL-banded Sobol/random perturbations around the reference.
 - Suggest closed-loop noisy BO batches with BoTorch `qLogNoisyExpectedImprovement` after observations are available.
 - For forecast extrapolation, optimize the averaged relative error against uniform,
@@ -16,17 +16,20 @@ The v1 workflow is offline and source-only:
 - For checkpoint-backed forecast BO, split the existing validation set deterministically into a calibration pool
   and a BO-validation pool. Build the SER/PTG reference from calibration windows, tune BO on fixed BO-validation
   windows, then re-score the top candidates on the full BO-validation pool before locked-test comparison.
-- Reuse locked-test `uniform` and `GITS` rows from prior runs when metadata and schedule hashes match. Reuse
-  `ser_ptg_reference` only when the generated reference schedule hash is identical.
 - Configure locked-test comparison schedules with `--comparison-schedules`. Deterministic schedules
-  `uniform`, `ays`, `gits`, and `ots` are cache-reusable when metadata and schedule hashes match.
+  `uniform`, `ays`, `gits`, and `ots` are evaluated in the current run; prior result trees are not searched.
 - Generate read-only BO trajectory and schedule-placement figures from completed run artifacts with
   `visualize-run`; this only writes `figures/` and `tables/` under the selected run root.
-- Run V1 bandit KL-PPO schedule search with `run-forecast-ppo-bandit`; this reuses or builds BO
-  warm-start artifacts, trains one diagonal Gaussian policy per `{dataset, solver, target_nfe}` cell,
+- Run V1 joint progression KL-PPO schedule search with `run-forecast-joint-progression-ppo`; this builds BO
+  warm-start artifacts under the current cell, trains one diagonal Gaussian policy per `{dataset, solver, target_nfe}` cell,
   and logs smoothness/min-step diagnostics without penalizing them in the V1 reward.
+- The joint progression PPO path writes `joint_progression_ppo_*` artifacts and
+  `joint_progression_ppo_best` schedule rows.
+- PPO samples one full 5D schedule per episode, evaluates it on the PPO train subset, and updates from those
+  train rewards. Selector confirmation evaluates only the top train candidates plus policy mean on the held-out
+  selector subset; selector rows are not fed back into PPO updates.
 
-The existing production package under `src/diffusion_flow_inference/` must not import from this folder. Promote reusable pieces only after they are reviewed and tested against the main inference workflow.
+The existing production scripts under `code/` must not import from this folder. Promote reusable pieces only after they are reviewed and tested against the main inference workflow.
 
 Install optional BO dependencies only when running `suggest-bo-batch`:
 
@@ -57,8 +60,7 @@ python future_work/bayesian_rl_schedule_optimization/code/cli.py visualize-run \
   --run-root outputs/future_work/bo_schedule_search/sf_traffic_nfe10_bo100_20k_cal70_val30_ref16_basis5 \
   --top-k 5
 
-python future_work/bayesian_rl_schedule_optimization/code/cli.py run-forecast-ppo-bandit \
-  --workspace-root /home/yzn/work/Diffusion-Flow-Inference \
+python future_work/bayesian_rl_schedule_optimization/code/cli.py run-forecast-joint-progression-ppo \
   --datasets san_francisco_traffic,solar_energy_10m \
   --target-nfes 10,12,16 \
   --solvers euler,heun,midpoint_rk2,dpmpp2m \
@@ -71,10 +73,9 @@ python future_work/bayesian_rl_schedule_optimization/code/cli.py run-forecast-pp
   --num-eval-samples 5 \
   --reference-macro-factor 16 \
   --final-test-seeds 0,1,2 \
-  --out-root outputs/future_work/kl_ppo_bandit/sf_solar_nfe10_12_16_20k_cal70_val30_v1
+  --out-root outputs/future_work/joint_progression_ppo/sf_solar_nfe10_12_16_20k_cal70_val30_v1
 
 python future_work/bayesian_rl_schedule_optimization/code/cli.py run-forecast-bo \
-  --workspace-root /home/yzn/work/Diffusion-Flow-Inference \
   --dataset san_francisco_traffic \
   --target-nfe 10 \
   --solvers euler,dpmpp2m \
@@ -90,7 +91,6 @@ python future_work/bayesian_rl_schedule_optimization/code/cli.py run-forecast-bo
   --reference-macro-factor 16 \
   --final-test-seeds 0,1,2 \
   --comparison-schedules uniform,gits,ser_ptg_reference,bo_best \
-  --baseline-cache-roots outputs/future_work/bo_schedule_search/sf_traffic_nfe10_bo100_20k_val64_s5_ref16 \
   --out-root outputs/future_work/bo_schedule_search/sf_traffic_nfe10_bo100_20k_cal70_val30_ref16_basis5
 ```
 
@@ -98,7 +98,6 @@ Solar transfer-schedule example:
 
 ```bash
 python future_work/bayesian_rl_schedule_optimization/code/cli.py run-forecast-bo \
-  --workspace-root /home/yzn/work/Diffusion-Flow-Inference \
   --dataset solar_energy_10m \
   --target-nfe 10 \
   --solvers euler,heun,midpoint_rk2,dpmpp2m \
@@ -127,7 +126,7 @@ Forecast observations should keep the uniform baseline fixed for the session:
   },
   "observations": [
     {
-      "theta": [0.0, 0.0, 0.0, 0.0],
+      "theta": [0.0, 0.0, 0.0, 0.0, 0.0],
       "crps": 3.8,
       "mase": 1.9
     }
@@ -137,10 +136,8 @@ Forecast observations should keep the uniform baseline fixed for the session:
 
 The code stores `relative_crps_ratio`, `relative_mase_ratio`, `metric_val`, and
 `objective_value = -metric_val - lambda_kl * KL(q || q_ref)`. Existing rows with a
-precomputed `metric_val` are still accepted for non-forecast experiments. Legacy forecast rows
-that repeat `uniform_crps` and `uniform_mase` are also accepted, but if a session-level
-`uniform_baseline` is present, row-level baseline values must match it.
+precomputed `metric_val` are still accepted for non-forecast experiments. Forecast rows with
+CRPS/MASE must include the session-level `uniform_baseline`; row-only baseline payloads are rejected.
 
 The default residual basis is now 5D: early/late tilt, quadratic curvature, and broad local
-bumps centered near 0.25, 0.50, and 0.75. Four-dimensional legacy observations still load with
-the older two-bump basis so previous run artifacts remain inspectable.
+bumps centered near 0.25, 0.50, and 0.75. Four-dimensional theta observations are rejected.

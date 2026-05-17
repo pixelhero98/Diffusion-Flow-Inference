@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+title: Diffusion-Flow-Inference
+message: If you use this software, please cite the repository.
+type: software
+authors:
+  - name: Diffusion-Flow-Inference contributors
+license: MIT
+repository-code: https://github.com/pixelhero98/Diffusion-Flow-Inference
+date-released: 2026-05-16
