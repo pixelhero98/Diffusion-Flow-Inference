@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from diffusion_flow_inference.models.config import LOBConfig
+from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.data.otflow_datasets import build_dataset_splits_from_arrays
 from diffusion_flow_inference.data.otflow_medical_constants import (
     DEFAULT_LONG_TERM_ECG_MANIFEST_NAME,
@@ -544,7 +544,7 @@ def long_term_headered_ecg_prep_stub(
 def build_long_term_headered_ecg_forecast_splits(
     *,
     dataset_root: str | Path,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     history_len: int,
     horizon: int,
     stride_train: int = 1,
@@ -816,7 +816,7 @@ def prepare_sleep_edf_dataset(
 
 def build_dataset_splits_from_sleep_edf(
     path: str,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     stride_train: int = SLEEP_EDF_EPOCH_SAMPLES,
     stride_eval: int = SLEEP_EDF_EPOCH_SAMPLES,

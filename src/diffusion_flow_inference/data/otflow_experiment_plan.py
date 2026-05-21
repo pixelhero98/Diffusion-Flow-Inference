@@ -10,6 +10,9 @@ from typing import Dict, Iterable, List, Mapping
 
 from diffusion_flow_inference.data.otflow_medical_constants import SLEEP_EDF_DATASET_KEY
 
+FORECAST_FAMILY = "forecast_extrapolation"
+CONDITIONAL_GENERATION_FAMILY = "conditional_generation"
+
 
 @dataclass(frozen=True)
 class DatasetExperimentSpec:
@@ -26,7 +29,7 @@ class DatasetExperimentSpec:
 PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     DatasetExperimentSpec(
         dataset_key="wind_farms_wo_missing",
-        benchmark_family="forecast_extrapolation",
+        benchmark_family=FORECAST_FAMILY,
         display_name="Wind Farms (Monash, W/O Missing)",
         experiment_horizon=1440,
         future_block_len=1440,
@@ -36,7 +39,7 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     ),
     DatasetExperimentSpec(
         dataset_key="san_francisco_traffic",
-        benchmark_family="forecast_extrapolation",
+        benchmark_family=FORECAST_FAMILY,
         display_name="San Francisco Traffic (Monash)",
         experiment_horizon=168,
         future_block_len=168,
@@ -46,7 +49,7 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     ),
     DatasetExperimentSpec(
         dataset_key="london_smart_meters_wo_missing",
-        benchmark_family="forecast_extrapolation",
+        benchmark_family=FORECAST_FAMILY,
         display_name="London Smart Meters (Monash, W/O Missing)",
         experiment_horizon=336,
         future_block_len=336,
@@ -56,7 +59,7 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     ),
     DatasetExperimentSpec(
         dataset_key="electricity",
-        benchmark_family="forecast_extrapolation",
+        benchmark_family=FORECAST_FAMILY,
         display_name="Electricity (Monash)",
         experiment_horizon=168,
         future_block_len=168,
@@ -66,7 +69,7 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     ),
     DatasetExperimentSpec(
         dataset_key="solar_energy_10m",
-        benchmark_family="forecast_extrapolation",
+        benchmark_family=FORECAST_FAMILY,
         display_name="Solar Energy (Monash, 10m)",
         experiment_horizon=1008,
         future_block_len=1008,
@@ -76,17 +79,17 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     ),
     DatasetExperimentSpec(
         dataset_key="cryptos",
-        benchmark_family="lob_conditional_generation",
+        benchmark_family=CONDITIONAL_GENERATION_FAMILY,
         display_name="cryptos",
         experiment_horizon=200,
         future_block_len=200,
         history_len=256,
         reasoning_axis="event_count",
-        rationale="LOB conditional generation uses a 200-event horizon with a horizon-wise rollout so the scheduler is evaluated on the full event trajectory rather than on repeated sub-blocks.",
+        rationale="Conditional generation uses a 200-event horizon with a horizon-wise rollout so the scheduler is evaluated on the full event trajectory rather than on repeated sub-blocks.",
     ),
     DatasetExperimentSpec(
         dataset_key="es_mbp_10",
-        benchmark_family="lob_conditional_generation",
+        benchmark_family=CONDITIONAL_GENERATION_FAMILY,
         display_name="es_mbp_10",
         experiment_horizon=200,
         future_block_len=200,
@@ -96,7 +99,7 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     ),
     DatasetExperimentSpec(
         dataset_key=SLEEP_EDF_DATASET_KEY,
-        benchmark_family="lob_conditional_generation",
+        benchmark_family=CONDITIONAL_GENERATION_FAMILY,
         display_name="sleep_edf",
         experiment_horizon=3000,
         future_block_len=3000,
@@ -107,13 +110,15 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
 )
 
 CANONICAL_FORECAST_PAPER_DATASETS: tuple[str, ...] = tuple(
-    spec.dataset_key for spec in PAPER_EXPERIMENT_SPECS if spec.benchmark_family == "forecast_extrapolation"
+    spec.dataset_key for spec in PAPER_EXPERIMENT_SPECS if spec.benchmark_family == FORECAST_FAMILY
 )
-CANONICAL_LOB_PAPER_DATASETS: tuple[str, ...] = tuple(
-    spec.dataset_key for spec in PAPER_EXPERIMENT_SPECS if spec.benchmark_family == "lob_conditional_generation"
+CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS: tuple[str, ...] = tuple(
+    spec.dataset_key for spec in PAPER_EXPERIMENT_SPECS if spec.benchmark_family == CONDITIONAL_GENERATION_FAMILY
 )
 CHECKPOINT_READY_FORECAST_DATASETS: tuple[str, ...] = tuple(CANONICAL_FORECAST_PAPER_DATASETS)
-CHECKPOINT_READY_LOB_PAPER_DATASETS: tuple[str, ...] = tuple(CANONICAL_LOB_PAPER_DATASETS)
+CHECKPOINT_READY_CONDITIONAL_GENERATION_DATASETS: tuple[str, ...] = tuple(
+    CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS
+)
 
 
 def experiment_plan_specs() -> List[DatasetExperimentSpec]:
@@ -128,16 +133,16 @@ def canonical_forecast_paper_dataset_keys() -> tuple[str, ...]:
     return tuple(CANONICAL_FORECAST_PAPER_DATASETS)
 
 
-def canonical_lob_paper_dataset_keys() -> tuple[str, ...]:
-    return tuple(CANONICAL_LOB_PAPER_DATASETS)
+def canonical_conditional_generation_paper_dataset_keys() -> tuple[str, ...]:
+    return tuple(CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS)
 
 
 def checkpoint_ready_forecast_dataset_keys() -> tuple[str, ...]:
     return tuple(CHECKPOINT_READY_FORECAST_DATASETS)
 
 
-def checkpoint_ready_lob_dataset_keys() -> tuple[str, ...]:
-    return tuple(CHECKPOINT_READY_LOB_PAPER_DATASETS)
+def checkpoint_ready_conditional_generation_dataset_keys() -> tuple[str, ...]:
+    return tuple(CHECKPOINT_READY_CONDITIONAL_GENERATION_DATASETS)
 
 
 def validate_experiment_plan(specs: Iterable[DatasetExperimentSpec] | None = None) -> List[Dict[str, object]]:
@@ -164,7 +169,7 @@ def write_experiment_plan(out_root: str | Path) -> Mapping[str, object]:
     payload = {
         "locked": True,
         "selection_policy": {
-            "horizon_rule": "Use reviewer-facing long horizons in physical time for forecasting and event-count horizons for LOB conditional generation.",
+            "horizon_rule": "Use reviewer-facing long horizons in physical time for forecasting and event-count horizons for conditional generation.",
             "chunk_rule": "Use horizon-wise non-AR rollouts in the main experiments, i.e. future_block_len equals the experiment horizon.",
         },
         "datasets": [asdict(spec) for spec in PAPER_EXPERIMENT_SPECS],
@@ -175,16 +180,18 @@ def write_experiment_plan(out_root: str | Path) -> Mapping[str, object]:
 
 
 __all__ = [
+    "CONDITIONAL_GENERATION_FAMILY",
     "CANONICAL_FORECAST_PAPER_DATASETS",
-    "CANONICAL_LOB_PAPER_DATASETS",
+    "CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS",
     "CHECKPOINT_READY_FORECAST_DATASETS",
-    "CHECKPOINT_READY_LOB_PAPER_DATASETS",
+    "CHECKPOINT_READY_CONDITIONAL_GENERATION_DATASETS",
     "DatasetExperimentSpec",
+    "FORECAST_FAMILY",
     "PAPER_EXPERIMENT_SPECS",
     "canonical_forecast_paper_dataset_keys",
-    "canonical_lob_paper_dataset_keys",
+    "canonical_conditional_generation_paper_dataset_keys",
     "checkpoint_ready_forecast_dataset_keys",
-    "checkpoint_ready_lob_dataset_keys",
+    "checkpoint_ready_conditional_generation_dataset_keys",
     "experiment_plan_by_key",
     "experiment_plan_specs",
     "validate_experiment_plan",

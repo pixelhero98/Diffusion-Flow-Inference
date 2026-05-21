@@ -22,23 +22,23 @@ from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import 
 from diffusion_flow_inference.evaluation.otflow_sampling_support import _choose_valid_windows
 from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
     ALL_SOLVER_ORDER,
+    CONDITIONAL_GENERATION_FAMILY,
+    DEFAULT_CONDITIONAL_GENERATION_DATASETS,
     DEFAULT_FORECAST_DATASETS,
-    DEFAULT_LOB_DATASETS,
     DEFAULT_SHARED_BACKBONE_ROOT,
     FORECAST_FAMILY,
     LOCKED_TEST_PHASE,
-    LOB_FAMILY,
     SOLVER_RUNTIME_NAMES,
     UNIFORM_SCHEDULER_KEY,
     VALIDATION_PHASE,
     choose_forecast_example_indices,
     evaluate_forecast_schedule,
+    load_conditional_generation_checkpoint_splits,
     load_forecast_checkpoint_splits,
-    load_lob_checkpoint_splits,
+    parse_conditional_generation_datasets,
     parse_csv,
     parse_forecast_datasets,
     parse_int_csv,
-    parse_lob_datasets,
     resolved_eval_horizon,
     resolved_eval_windows,
     selection_metric_for_family,
@@ -242,7 +242,9 @@ def _protocol_config_fingerprint(cli_args: argparse.Namespace) -> str:
     payload = {
         "runner_signature": RUNNER_SIGNATURE_VERSION,
         "forecast_datasets": parse_forecast_datasets(str(cli_args.forecast_datasets)),
-        "lob_datasets": parse_lob_datasets(str(cli_args.lob_datasets)),
+        "conditional_generation_datasets": parse_conditional_generation_datasets(
+            str(cli_args.conditional_generation_datasets)
+        ),
         "seeds": parse_int_csv(str(cli_args.seeds)),
         "target_nfe_values": parse_int_csv(str(cli_args.target_nfe_values)),
         "solver_names": parse_csv(str(cli_args.solver_names)),
@@ -540,15 +542,15 @@ def _run_forecast_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[s
     return rows
 
 
-def _run_lob_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[str, Any], split_phase: str, seeds: Sequence[int], scheduler_cases_by_dataset: Mapping[str, Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
+def _run_conditional_generation_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[str, Any], split_phase: str, seeds: Sequence[int], scheduler_cases_by_dataset: Mapping[str, Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
     shared_backbone_root = Path(str(cli_args.shared_backbone_root)).resolve()
     device = torch.device(str(cli_args.device))
     dataset_cache: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
-    datasets = parse_lob_datasets(str(cli_args.lob_datasets))
+    datasets = parse_conditional_generation_datasets(str(cli_args.conditional_generation_datasets))
     for dataset_idx, dataset in enumerate(datasets):
         if dataset not in dataset_cache:
-            dataset_cache[dataset] = load_lob_checkpoint_splits(cli_args=cli_args, shared_backbone_root=shared_backbone_root, dataset=dataset, device=device)
+            dataset_cache[dataset] = load_conditional_generation_checkpoint_splits(cli_args=cli_args, shared_backbone_root=shared_backbone_root, dataset=dataset, device=device)
         checkpoint = dataset_cache[dataset]
         model = checkpoint["model"]
         cfg = checkpoint["cfg"]
@@ -561,7 +563,7 @@ def _run_lob_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[str, A
             for target_idx, target_nfe in enumerate(parse_int_csv(str(cli_args.target_nfe_values))):
                 for solver_idx, solver_key in enumerate(parse_csv(str(cli_args.solver_names))):
                     runtime_nfe = solver_macro_steps(str(solver_key), int(target_nfe))
-                    existing_rows, pending_cases = _pending_scheduler_cases(row_recorder, benchmark_family=LOB_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint_id=str(checkpoint["checkpoint_id"]), target_nfe=int(target_nfe), solver_key=str(solver_key), scheduler_cases=list(scheduler_cases_by_dataset[str(dataset)]))
+                    existing_rows, pending_cases = _pending_scheduler_cases(row_recorder, benchmark_family=CONDITIONAL_GENERATION_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint_id=str(checkpoint["checkpoint_id"]), target_nfe=int(target_nfe), solver_key=str(solver_key), scheduler_cases=list(scheduler_cases_by_dataset[str(dataset)]))
                     rows.extend(existing_rows)
                     cell_uniform_metrics: Optional[Mapping[str, Any]] = None
                     for existing_row in existing_rows:
@@ -599,7 +601,7 @@ def _run_lob_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[str, A
                         }
                         if scheduler_key != UNIFORM_SCHEDULER_KEY and cell_uniform_metrics is not None:
                             metrics["relative_score_gain_vs_uniform"] = _safe_relative_gain(metrics.get("score_main"), cell_uniform_metrics.get("score_main"))
-                        row = _build_row(benchmark_family=LOB_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint=checkpoint, target_nfe=int(target_nfe), runtime_nfe=int(runtime_nfe), solver_key=str(solver_key), scheduler_key=scheduler_key, details=details, metrics=metrics, row_signature=str(case["row_signature"]), protocol_hash=str(row_recorder["protocol_hash"]))
+                        row = _build_row(benchmark_family=CONDITIONAL_GENERATION_FAMILY, split_phase=str(split_phase), seed=int(seed), dataset=str(dataset), checkpoint=checkpoint, target_nfe=int(target_nfe), runtime_nfe=int(runtime_nfe), solver_key=str(solver_key), scheduler_key=scheduler_key, details=details, metrics=metrics, row_signature=str(case["row_signature"]), protocol_hash=str(row_recorder["protocol_hash"]))
                         _append_row_record(row_recorder, row)
                         rows.append(row)
                         if scheduler_key == UNIFORM_SCHEDULER_KEY:
@@ -686,7 +688,22 @@ def _prep_summary(cli_args: argparse.Namespace) -> Dict[str, Any]:
             payload = json.loads(resolved.read_text(encoding="utf-8"))
             manifest_summary["ready_count"] = int(payload.get("ready_count", 0))
             manifest_summary["missing_count"] = int(payload.get("missing_count", 0))
-    return {"runner_mode": "diffusion_flow_time_reparameterization", "runner_signature": RUNNER_SIGNATURE_VERSION, "method_key": METHOD_KEY, "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS), "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS), "scheduled_evaluation_keys": schedules, "solver_names": solvers, "target_nfe_values": nfes, "forecast_datasets": parse_forecast_datasets(str(cli_args.forecast_datasets)), "lob_datasets": parse_lob_datasets(str(cli_args.lob_datasets)), "backbone_manifest": manifest_summary, "allow_execute": bool(getattr(cli_args, "allow_execute", False))}
+    return {
+        "runner_mode": "diffusion_flow_time_reparameterization",
+        "runner_signature": RUNNER_SIGNATURE_VERSION,
+        "method_key": METHOD_KEY,
+        "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS),
+        "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS),
+        "scheduled_evaluation_keys": schedules,
+        "solver_names": solvers,
+        "target_nfe_values": nfes,
+        "forecast_datasets": parse_forecast_datasets(str(cli_args.forecast_datasets)),
+        "conditional_generation_datasets": parse_conditional_generation_datasets(
+            str(cli_args.conditional_generation_datasets)
+        ),
+        "backbone_manifest": manifest_summary,
+        "allow_execute": bool(getattr(cli_args, "allow_execute", False)),
+    }
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -698,7 +715,11 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--otflow_train_steps", type=int, default=20000)
     ap.add_argument("--steps", type=int, default=0)
     ap.add_argument("--forecast_datasets", type=str, default=",".join(DEFAULT_FORECAST_DATASETS))
-    ap.add_argument("--lob_datasets", type=str, default=",".join(DEFAULT_LOB_DATASETS))
+    ap.add_argument(
+        "--conditional_generation_datasets",
+        type=str,
+        default=",".join(DEFAULT_CONDITIONAL_GENERATION_DATASETS),
+    )
     ap.add_argument("--cryptos_path", type=str, default="")
     ap.add_argument("--es_path", type=str, default="")
     ap.add_argument("--sleep_edf_path", type=str, default="")
@@ -759,11 +780,22 @@ def run_diffusion_flow_time_reparameterization(cli_args: argparse.Namespace) -> 
     row_recorder = _init_row_recorder(out_root, cli_args)
     locked_seeds = parse_int_csv(str(cli_args.seeds))
     forecast_datasets = parse_forecast_datasets(str(cli_args.forecast_datasets))
-    lob_datasets = parse_lob_datasets(str(cli_args.lob_datasets))
-    scheduler_cases = _scheduler_cases_for_datasets(cli_args, list(forecast_datasets) + list(lob_datasets))
+    conditional_generation_datasets = parse_conditional_generation_datasets(
+        str(cli_args.conditional_generation_datasets)
+    )
+    scheduler_cases = _scheduler_cases_for_datasets(
+        cli_args,
+        list(forecast_datasets) + list(conditional_generation_datasets),
+    )
     try:
         _run_forecast_phase(cli_args, row_recorder=row_recorder, split_phase=LOCKED_TEST_PHASE, seeds=locked_seeds, scheduler_cases_by_dataset={dataset: scheduler_cases[dataset] for dataset in forecast_datasets})
-        _run_lob_phase(cli_args, row_recorder=row_recorder, split_phase=LOCKED_TEST_PHASE, seeds=locked_seeds, scheduler_cases_by_dataset={dataset: scheduler_cases[dataset] for dataset in lob_datasets})
+        _run_conditional_generation_phase(
+            cli_args,
+            row_recorder=row_recorder,
+            split_phase=LOCKED_TEST_PHASE,
+            seeds=locked_seeds,
+            scheduler_cases_by_dataset={dataset: scheduler_cases[dataset] for dataset in conditional_generation_datasets},
+        )
     finally:
         row_recorder["fh"].close()
 

@@ -7,7 +7,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from diffusion_flow_inference.data.otflow_experiment_plan import CANONICAL_FORECAST_PAPER_DATASETS, CANONICAL_LOB_PAPER_DATASETS, experiment_plan_by_key
+from diffusion_flow_inference.data.otflow_experiment_plan import (
+    CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS,
+    CANONICAL_FORECAST_PAPER_DATASETS,
+    experiment_plan_by_key,
+)
 from diffusion_flow_inference.data.otflow_medical_constants import (
     LONG_TERM_HEADERED_ECG_DATASET_KEY,
     SLEEP_EDF_DATASET_KEY,
@@ -17,9 +21,9 @@ from diffusion_flow_inference.data.otflow_medical_constants import (
 from diffusion_flow_inference.data.otflow_paths import project_backbone_matrix_root as default_project_backbone_matrix_root, project_data_root, project_outputs_root, project_paper_dataset_root
 
 FORECAST_FAMILY = "forecast_extrapolation"
-LOB_FAMILY = "lob_conditional_generation"
+CONDITIONAL_GENERATION_FAMILY = "conditional_generation"
 BACKBONE_NAME_OTFLOW = "otflow"
-LOB_FIELD_NETWORK_TYPE = "transformer"
+DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE = "transformer"
 DEFAULT_SEED = 0
 TRAIN_BUDGET_STEPS: Tuple[int, ...] = (4000, 8000, 12000, 16000, 20000)
 STANDARD_ARTIFACT_SUMMARY_NAME = "artifact_summary.json"
@@ -34,7 +38,7 @@ ACTIVE_FORECAST_BACKBONE_BUDGETS: Mapping[str, Tuple[int, ...]] = {
     "solar_energy_10m": (4000, 8000, 12000, 16000, 20000),
     "wind_farms_wo_missing": (4000, 8000, 12000, 16000, 20000),
 }
-ACTIVE_LOB_BACKBONE_BUDGETS: Mapping[str, Tuple[int, ...]] = {
+ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS: Mapping[str, Tuple[int, ...]] = {
     "cryptos": (4000, 8000, 12000, 16000, 20000),
     "es_mbp_10": (4000, 8000, 12000, 16000, 20000),
     SLEEP_EDF_DATASET_KEY: (4000, 8000, 12000, 16000, 20000),
@@ -99,9 +103,14 @@ def build_backbone_checkpoint_id(
     seed: int = DEFAULT_SEED,
     field_network_type: Optional[str] = None,
 ) -> str:
-    family_token = "forecast" if str(benchmark_family) == FORECAST_FAMILY else "lob"
+    if str(benchmark_family) == FORECAST_FAMILY:
+        family_token = "forecast"
+    elif str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY:
+        family_token = "conditional_generation"
+    else:
+        raise ValueError(f"Unsupported benchmark_family={benchmark_family}")
     parts = [str(dataset_key), str(backbone_name), family_token]
-    if str(benchmark_family) == LOB_FAMILY and field_network_type:
+    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY and field_network_type:
         parts.append(str(field_network_type))
     parts.extend([train_budget_label(int(train_steps)), f"seed{int(seed)}"])
     return "_".join(parts)
@@ -110,8 +119,8 @@ def build_backbone_checkpoint_id(
 def _active_budget_map(benchmark_family: str) -> Mapping[str, Tuple[int, ...]]:
     if str(benchmark_family) == FORECAST_FAMILY:
         return ACTIVE_FORECAST_BACKBONE_BUDGETS
-    if str(benchmark_family) == LOB_FAMILY:
-        return ACTIVE_LOB_BACKBONE_BUDGETS
+    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY:
+        return ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS
     raise ValueError(f"Unsupported benchmark_family={benchmark_family}")
 
 
@@ -119,8 +128,15 @@ def _forecast_artifact_root(matrix_root: Path, backbone_name: str, dataset_key: 
     return matrix_root / str(backbone_name) / "forecast" / train_budget_label(int(train_steps)) / str(dataset_key)
 
 
-def _lob_artifact_root(matrix_root: Path, backbone_name: str, dataset_key: str, train_steps: int) -> Path:
-    return matrix_root / str(backbone_name) / "lob" / train_budget_label(int(train_steps)) / str(dataset_key) / LOB_FIELD_NETWORK_TYPE
+def _conditional_generation_artifact_root(matrix_root: Path, backbone_name: str, dataset_key: str, train_steps: int) -> Path:
+    return (
+        matrix_root
+        / str(backbone_name)
+        / "conditional_generation"
+        / train_budget_label(int(train_steps))
+        / str(dataset_key)
+        / DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+    )
 
 
 def expected_artifact_root(
@@ -134,8 +150,8 @@ def expected_artifact_root(
     root = Path(matrix_root).resolve()
     if str(benchmark_family) == FORECAST_FAMILY:
         return _forecast_artifact_root(root, str(backbone_name), str(dataset_key), int(train_steps))
-    if str(benchmark_family) == LOB_FAMILY:
-        return _lob_artifact_root(root, str(backbone_name), str(dataset_key), int(train_steps))
+    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY:
+        return _conditional_generation_artifact_root(root, str(backbone_name), str(dataset_key), int(train_steps))
     raise ValueError(f"Unsupported benchmark_family={benchmark_family}")
 
 
@@ -257,15 +273,15 @@ def _otflow_artifact_compatibility(
         if observed != expected:
             errors.append(f"metadata.{key}={observed!r} != expected {expected!r}")
 
-    if str(benchmark_family) == LOB_FAMILY:
+    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY:
         try:
             observed_field = str(_metadata_value(metadata, "field_network_type"))
         except KeyError:
             errors.append("metadata.field_network_type is missing or invalid")
         else:
-            if observed_field != str(field_network_type or LOB_FIELD_NETWORK_TYPE):
+            if observed_field != str(field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE):
                 errors.append(
-                    f"metadata.field_network_type={observed_field!r} != expected {str(field_network_type or LOB_FIELD_NETWORK_TYPE)!r}"
+                    f"metadata.field_network_type={observed_field!r} != expected {str(field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
                 )
 
     cond_dim = _metadata_cond_dim(metadata)
@@ -279,9 +295,11 @@ def _otflow_artifact_compatibility(
         errors.append(
             f"checkpoint future_block_len={int(signature['future_block_len'])} != expected {int(spec.future_block_len)}"
         )
-    if str(benchmark_family) == LOB_FAMILY and str(signature["field_network_type"]) != str(field_network_type or LOB_FIELD_NETWORK_TYPE):
+    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY and str(signature["field_network_type"]) != str(
+        field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+    ):
         errors.append(
-            f"checkpoint field_network_type={str(signature['field_network_type'])!r} != expected {str(field_network_type or LOB_FIELD_NETWORK_TYPE)!r}"
+            f"checkpoint field_network_type={str(signature['field_network_type'])!r} != expected {str(field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
         )
 
     if errors:
@@ -309,7 +327,11 @@ def _existing_matrix_artifact(
         return None
     metadata = _safe_json(paths["metadata_path"])
     field_network_type = None if metadata is None else metadata.get("field_network_type")
-    expected_field_network_type = LOB_FIELD_NETWORK_TYPE if str(benchmark_family) == LOB_FAMILY else None
+    expected_field_network_type = (
+        DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY
+        else None
+    )
     model_cond_dim, status, compatibility_error = _otflow_artifact_compatibility(
         metadata,
         paths["checkpoint_path"],
@@ -371,12 +393,17 @@ def _existing_otflow_reuse_artifact(
         metadata_path = artifact_root / "checkpoint_metadata.json"
         summary_path = artifact_root / "forecast_summary.json"
         field_network_type = None
-    elif str(benchmark_family) == LOB_FAMILY:
-        artifact_root = reuse_root / "lob" / str(dataset_key) / LOB_FIELD_NETWORK_TYPE
+    elif str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY:
+        artifact_root = (
+            reuse_root
+            / "conditional_generation"
+            / str(dataset_key)
+            / DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        )
         checkpoint_path = artifact_root / "model.pt"
         metadata_path = artifact_root / "checkpoint_metadata.json"
         summary_path = artifact_root / "checkpoint_metadata.json"
-        field_network_type = LOB_FIELD_NETWORK_TYPE
+        field_network_type = DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
     else:
         raise ValueError(f"Unsupported benchmark_family={benchmark_family}")
     if not checkpoint_path.exists():
@@ -566,7 +593,7 @@ def normalize_imported_backbone_artifacts(
     requested_steps = {int(value) for value in budget_steps}
     for benchmark_family, budget_map in (
         (FORECAST_FAMILY, ACTIVE_FORECAST_BACKBONE_BUDGETS),
-        (LOB_FAMILY, ACTIVE_LOB_BACKBONE_BUDGETS),
+        (CONDITIONAL_GENERATION_FAMILY, ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS),
     ):
         for dataset_key, active_steps in budget_map.items():
             for train_steps in active_steps:
@@ -611,7 +638,11 @@ def _planned_artifact(
         dataset_key=str(dataset_key),
         train_steps=int(train_steps),
     )
-    field_network_type = LOB_FIELD_NETWORK_TYPE if str(benchmark_family) == LOB_FAMILY else None
+    field_network_type = (
+        DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY
+        else None
+    )
     return BackboneArtifactSpec(
         backbone_name=str(backbone_name),
         benchmark_family=str(benchmark_family),
@@ -655,14 +686,14 @@ def _iter_target_specs(
                 train_steps=int(train_steps),
                 seed=int(seed),
             )
-    for dataset_key in tuple(CANONICAL_LOB_PAPER_DATASETS):
-        for train_steps in ACTIVE_LOB_BACKBONE_BUDGETS.get(str(dataset_key), ()):
+    for dataset_key in tuple(CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS):
+        for train_steps in ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS.get(str(dataset_key), ()):
             if int(train_steps) not in requested_steps:
                 continue
             yield _planned_artifact(
                 matrix_root,
                 backbone_name=BACKBONE_NAME_OTFLOW,
-                benchmark_family=LOB_FAMILY,
+                benchmark_family=CONDITIONAL_GENERATION_FAMILY,
                 dataset_key=str(dataset_key),
                 train_steps=int(train_steps),
                 seed=int(seed),
@@ -818,14 +849,14 @@ def build_backbone_readiness_audit(
 
 __all__ = [
     "ACTIVE_FORECAST_BACKBONE_BUDGETS",
-    "ACTIVE_LOB_BACKBONE_BUDGETS",
+    "ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS",
     "AUDIT_VERSION",
     "BACKBONE_NAME_OTFLOW",
+    "CONDITIONAL_GENERATION_FAMILY",
+    "DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE",
     "DEFAULT_SEED",
     "FORECAST_FAMILY",
     "IMPORTED_EXTERNAL_SOURCE_KIND",
-    "LOB_FAMILY",
-    "LOB_FIELD_NETWORK_TYPE",
     "MANIFEST_VERSION",
     "STANDARD_ARTIFACT_SUMMARY_NAME",
     "TRAIN_BUDGET_STEPS",

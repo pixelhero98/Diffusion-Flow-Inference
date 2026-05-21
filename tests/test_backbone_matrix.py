@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 from diffusion_flow_inference.data.otflow_experiment_plan import experiment_plan_by_key
 from diffusion_flow_inference.evaluation.fm_backbone_registry import (
+    ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS,
     ACTIVE_FORECAST_BACKBONE_BUDGETS,
-    ACTIVE_LOB_BACKBONE_BUDGETS,
     BACKBONE_NAME_OTFLOW,
+    CONDITIONAL_GENERATION_FAMILY,
     FORECAST_FAMILY,
-    LOB_FAMILY,
     build_backbone_readiness_audit,
     find_backbone_artifact,
     materialize_backbone_manifest,
@@ -22,8 +22,9 @@ from diffusion_flow_inference.schedule_transfer.otflow_paper_tables import augme
 
 def _checkpoint_metadata(benchmark_family: str, dataset_key: str, train_steps: int) -> dict:
     spec = experiment_plan_by_key()[str(dataset_key)]
+    family_token = "forecast" if benchmark_family == FORECAST_FAMILY else "conditional_generation_transformer"
     metadata = {
-        "checkpoint_id": f"{dataset_key}_otflow_{'forecast' if benchmark_family == FORECAST_FAMILY else 'lob'}_{train_steps // 1000}k_seed0",
+        "checkpoint_id": f"{dataset_key}_otflow_{family_token}_{train_steps // 1000}k_seed0",
         "dataset_key": str(dataset_key),
         "benchmark_family": str(benchmark_family),
         "train_steps": int(train_steps),
@@ -36,7 +37,7 @@ def _checkpoint_metadata(benchmark_family: str, dataset_key: str, train_steps: i
             "history_len": int(spec.history_len),
         },
     }
-    if benchmark_family == LOB_FAMILY:
+    if benchmark_family == CONDITIONAL_GENERATION_FAMILY:
         metadata["field_network_type"] = "transformer"
     return metadata
 
@@ -140,17 +141,17 @@ class BackboneMatrixTests(unittest.TestCase):
                 (FORECAST_FAMILY, "electricity", 4000),
                 (FORECAST_FAMILY, "solar_energy_10m", 4000),
                 (FORECAST_FAMILY, "wind_farms_wo_missing", 4000),
-                (LOB_FAMILY, "cryptos", 8000),
-                (LOB_FAMILY, "cryptos", 12000),
-                (LOB_FAMILY, "cryptos", 16000),
-                (LOB_FAMILY, "es_mbp_10", 4000),
-                (LOB_FAMILY, "es_mbp_10", 8000),
-                (LOB_FAMILY, "es_mbp_10", 12000),
-                (LOB_FAMILY, "es_mbp_10", 16000),
-                (LOB_FAMILY, "sleep_edf", 8000),
-                (LOB_FAMILY, "sleep_edf", 12000),
-                (LOB_FAMILY, "sleep_edf", 16000),
-                (LOB_FAMILY, "sleep_edf", 20000),
+                (CONDITIONAL_GENERATION_FAMILY, "cryptos", 8000),
+                (CONDITIONAL_GENERATION_FAMILY, "cryptos", 12000),
+                (CONDITIONAL_GENERATION_FAMILY, "cryptos", 16000),
+                (CONDITIONAL_GENERATION_FAMILY, "es_mbp_10", 4000),
+                (CONDITIONAL_GENERATION_FAMILY, "es_mbp_10", 8000),
+                (CONDITIONAL_GENERATION_FAMILY, "es_mbp_10", 12000),
+                (CONDITIONAL_GENERATION_FAMILY, "es_mbp_10", 16000),
+                (CONDITIONAL_GENERATION_FAMILY, "sleep_edf", 8000),
+                (CONDITIONAL_GENERATION_FAMILY, "sleep_edf", 12000),
+                (CONDITIONAL_GENERATION_FAMILY, "sleep_edf", 16000),
+                (CONDITIONAL_GENERATION_FAMILY, "sleep_edf", 20000),
             }
 
             def _write_imported_artifact(benchmark_family: str, dataset_key: str, train_steps: int) -> None:
@@ -166,11 +167,11 @@ class BackboneMatrixTests(unittest.TestCase):
                     if (FORECAST_FAMILY, dataset_key, train_steps) in missing:
                         continue
                     _write_imported_artifact(FORECAST_FAMILY, dataset_key, train_steps)
-            for dataset_key, steps in ACTIVE_LOB_BACKBONE_BUDGETS.items():
+            for dataset_key, steps in ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS.items():
                 for train_steps in steps:
-                    if (LOB_FAMILY, dataset_key, train_steps) in missing:
+                    if (CONDITIONAL_GENERATION_FAMILY, dataset_key, train_steps) in missing:
                         continue
-                    _write_imported_artifact(LOB_FAMILY, dataset_key, train_steps)
+                    _write_imported_artifact(CONDITIONAL_GENERATION_FAMILY, dataset_key, train_steps)
 
             with patch(
                 "diffusion_flow_inference.evaluation.fm_backbone_registry._checkpoint_signature",
@@ -301,10 +302,10 @@ class BackboneMatrixTests(unittest.TestCase):
             places=8,
         )
 
-    def test_lob_relative_metrics_preserve_seed_paired_gain(self) -> None:
+    def test_conditional_generation_relative_metrics_preserve_seed_paired_gain(self) -> None:
         rows = [
             {
-                "benchmark_family": LOB_FAMILY,
+                "benchmark_family": CONDITIONAL_GENERATION_FAMILY,
                 "split_phase": "locked_test",
                 "dataset": "cryptos",
                 "backbone_name": "otflow",
@@ -319,7 +320,7 @@ class BackboneMatrixTests(unittest.TestCase):
                 "experiment_scope": "main",
             },
             {
-                "benchmark_family": LOB_FAMILY,
+                "benchmark_family": CONDITIONAL_GENERATION_FAMILY,
                 "split_phase": "locked_test",
                 "dataset": "cryptos",
                 "backbone_name": "otflow",

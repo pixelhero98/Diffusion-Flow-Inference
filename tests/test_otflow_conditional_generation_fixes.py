@@ -8,17 +8,21 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from diffusion_flow_inference.models.config import LOBConfig
-from diffusion_flow_inference.evaluation.fm_backbone_registry import BACKBONE_NAME_OTFLOW, LOB_FAMILY, materialize_backbone_manifest
+from diffusion_flow_inference.models.config import OTFlowConfig
+from diffusion_flow_inference.evaluation.fm_backbone_registry import (
+    BACKBONE_NAME_OTFLOW,
+    CONDITIONAL_GENERATION_FAMILY,
+    materialize_backbone_manifest,
+)
 from diffusion_flow_inference.data.otflow_datasets import build_dataset_splits_from_arrays
-from diffusion_flow_inference.evaluation.otflow_evaluation_support import load_lob_checkpoint_splits
+from diffusion_flow_inference.evaluation.otflow_evaluation_support import load_conditional_generation_checkpoint_splits
 from diffusion_flow_inference.data.otflow_medical_datasets import prepare_sleep_edf_dataset
 from diffusion_flow_inference.models.otflow_model import OTFlow
 from diffusion_flow_inference.models.otflow_train_val import _parse_batch, select_eval_window_starts, train_loop
 
 
-def _tiny_cfg(*, cond_dim: int = 0) -> LOBConfig:
-    return LOBConfig(
+def _tiny_cfg(*, cond_dim: int = 0) -> OTFlowConfig:
+    return OTFlowConfig(
         device=torch.device("cpu"),
         levels=1,
         token_dim=4,
@@ -92,14 +96,14 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
         model = OTFlow(cfg)
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            artifact_dir = root / "lob" / "sleep_edf" / "transformer"
+            artifact_dir = root / "conditional_generation" / "sleep_edf" / "transformer"
             artifact_dir.mkdir(parents=True, exist_ok=True)
             torch.save({"cfg": cfg.to_dict(), "model_state": model.state_dict()}, artifact_dir / "model.pt")
             (artifact_dir / "checkpoint_metadata.json").write_text(
                 json.dumps(
                     {
                         "dataset_key": "sleep_edf",
-                        "benchmark_family": LOB_FAMILY,
+                        "benchmark_family": CONDITIONAL_GENERATION_FAMILY,
                         "train_steps": 20000,
                         "history_len": 12000,
                         "future_block_len": 3000,
@@ -111,7 +115,7 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
             )
             args = type("Args", (), {"backbone_manifest": "", "otflow_train_steps": 20000})()
             with self.assertRaisesRegex(RuntimeError, "model.cond_dim=0"):
-                load_lob_checkpoint_splits(
+                load_conditional_generation_checkpoint_splits(
                     cli_args=args,
                     shared_backbone_root=root,
                     dataset="sleep_edf",
@@ -143,7 +147,7 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
         model = OTFlow(cfg)
         with tempfile.TemporaryDirectory() as tmpdir:
             matrix_root = Path(tmpdir) / "matrix"
-            artifact_dir = matrix_root / "otflow" / "lob" / "20k" / "sleep_edf" / "transformer"
+            artifact_dir = matrix_root / "otflow" / "conditional_generation" / "20k" / "sleep_edf" / "transformer"
             artifact_dir.mkdir(parents=True, exist_ok=True)
             torch.save({"cfg": cfg.to_dict(), "model_state": model.state_dict()}, artifact_dir / "model.pt")
             (artifact_dir / "checkpoint_metadata.json").write_text(
@@ -151,7 +155,7 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
                     {
                         "checkpoint_id": "sleep_bad",
                         "dataset_key": "sleep_edf",
-                        "benchmark_family": LOB_FAMILY,
+                        "benchmark_family": CONDITIONAL_GENERATION_FAMILY,
                         "train_steps": 20000,
                         "history_len": 12000,
                         "future_block_len": 3000,
@@ -174,7 +178,7 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
             row
             for row in payload["artifacts"]
             if row["backbone_name"] == BACKBONE_NAME_OTFLOW
-            and row["benchmark_family"] == LOB_FAMILY
+            and row["benchmark_family"] == CONDITIONAL_GENERATION_FAMILY
             and row["dataset_key"] == "sleep_edf"
         ]
         self.assertEqual(sleep_rows[0]["status"], "invalid")

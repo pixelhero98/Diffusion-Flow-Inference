@@ -10,7 +10,7 @@ _CONFIG_SECTIONS = ("data", "model", "fm", "train", "sample")
 
 
 @dataclass
-class LOBDataConfig:
+class SequenceDataConfig:
     levels: int = 10
     token_dim: int = 4
     history_len: int = 256
@@ -113,8 +113,8 @@ class SampleConfig:
 
 
 @dataclass(init=False)
-class LOBConfig:
-    data: LOBDataConfig = field(default_factory=LOBDataConfig)
+class OTFlowConfig:
+    data: SequenceDataConfig = field(default_factory=SequenceDataConfig)
     model: SharedModelConfig = field(default_factory=SharedModelConfig)
     fm: FMConfig = field(default_factory=FMConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
@@ -122,14 +122,14 @@ class LOBConfig:
 
     def __init__(
         self,
-        data: Optional[LOBDataConfig] = None,
+        data: Optional[SequenceDataConfig] = None,
         model: Optional[SharedModelConfig] = None,
         fm: Optional[FMConfig] = None,
         train: Optional[TrainConfig] = None,
         sample: Optional[SampleConfig] = None,
         **flat_overrides: Any,
     ):
-        object.__setattr__(self, "data", data if data is not None else LOBDataConfig())
+        object.__setattr__(self, "data", data if data is not None else SequenceDataConfig())
         object.__setattr__(self, "model", model if model is not None else SharedModelConfig())
         object.__setattr__(self, "fm", fm if fm is not None else FMConfig())
         object.__setattr__(self, "train", train if train is not None else TrainConfig())
@@ -144,7 +144,7 @@ class LOBConfig:
                 return getattr(section, name)
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
-    def apply_overrides(self, **flat_overrides: Any) -> "LOBConfig":
+    def apply_overrides(self, **flat_overrides: Any) -> "OTFlowConfig":
         for key, value in flat_overrides.items():
             matched = False
             for section_name in _CONFIG_SECTIONS:

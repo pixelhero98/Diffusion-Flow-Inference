@@ -43,9 +43,9 @@ def build_forecast_appendix_table_layout(nfe_values: Sequence[int]) -> TableLayo
     )
 
 
-def build_lob_table_layout(nfe_values: Sequence[int]) -> TableLayout:
+def build_conditional_generation_table_layout(nfe_values: Sequence[int]) -> TableLayout:
     return TableLayout(
-        benchmark_family="lob_conditional_generation",
+        benchmark_family="conditional_generation",
         title="OTFlow conditional generation under matched NFE",
         row_group_label="Sampling method",
         schedule_label="Schedule",
@@ -59,9 +59,9 @@ def build_lob_table_layout(nfe_values: Sequence[int]) -> TableLayout:
     )
 
 
-def build_lob_appendix_table_layout(nfe_values: Sequence[int]) -> TableLayout:
+def build_conditional_generation_appendix_table_layout(nfe_values: Sequence[int]) -> TableLayout:
     return TableLayout(
-        benchmark_family="lob_conditional_generation",
+        benchmark_family="conditional_generation",
         title="OTFlow conditional generation appendix metrics",
         row_group_label="Sampling method",
         schedule_label="Schedule",
@@ -75,9 +75,9 @@ def build_lob_appendix_table_layout(nfe_values: Sequence[int]) -> TableLayout:
     )
 
 
-def build_lob_pilot_table_layout(nfe_values: Sequence[int]) -> TableLayout:
+def build_conditional_generation_pilot_table_layout(nfe_values: Sequence[int]) -> TableLayout:
     return TableLayout(
-        benchmark_family="lob_conditional_generation",
+        benchmark_family="conditional_generation",
         title="OTFlow conditional-generation pilot under matched NFE",
         row_group_label="Sampling method",
         schedule_label="Schedule",
@@ -195,7 +195,7 @@ def augment_rows_with_relative_metrics(rows: Sequence[Mapping[str, Any]]) -> Lis
                     _metric_value(row, "mase"),
                     _metric_value(baseline, "mase"),
                 )
-        if baseline is not None and family == "lob_conditional_generation":
+        if baseline is not None and family == "conditional_generation":
             if payload["relative_score_gain_vs_uniform"] is None:
                 payload["relative_score_gain_vs_uniform"] = _safe_relative_gain(
                     _metric_value(row, "score_main"),
@@ -211,9 +211,9 @@ __all__ = [
     "augment_rows_with_relative_metrics",
     "build_forecast_appendix_table_layout",
     "build_forecast_table_layout",
-    "build_lob_appendix_table_layout",
-    "build_lob_table_layout",
-    "build_lob_pilot_table_layout",
+    "build_conditional_generation_appendix_table_layout",
+    "build_conditional_generation_table_layout",
+    "build_conditional_generation_pilot_table_layout",
     "markdown_header_stub",
     "table_layout_to_dict",
 ]

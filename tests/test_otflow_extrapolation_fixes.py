@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from diffusion_flow_inference.models.config import LOBConfig
-from diffusion_flow_inference.data.otflow_datasets import WindowedLOBParamsDataset
+from diffusion_flow_inference.models.config import OTFlowConfig
+from diffusion_flow_inference.data.otflow_datasets import WindowedParamSequenceDataset
 from diffusion_flow_inference.evaluation.otflow_evaluation_support import choose_forecast_example_indices, evaluate_forecast_schedule, parse_forecast_datasets
 from diffusion_flow_inference.data.otflow_forecast_data import ForecastExampleRef, ForecastSeriesRecord, MonashForecastWindowDataset, _regular_time_features
 from diffusion_flow_inference.data.otflow_medical_constants import LONG_TERM_HEADERED_ECG_DATASET_KEY, default_long_term_headered_ecg_manifest_path
@@ -50,16 +50,16 @@ class ExtrapolationFixesTest(unittest.TestCase):
             self.assertEqual(hist.shape[-1], 1 + extra_dim)
 
     def test_time_feature_modes_reject_ambiguous_configuration(self) -> None:
-        cfg = LOBConfig(use_time_features=True, use_time_gaps=True)
+        cfg = OTFlowConfig(use_time_features=True, use_time_gaps=True)
         with self.assertRaisesRegex(ValueError, "exactly one mode"):
             _ = cfg.context_dim
 
     def test_windowed_dataset_includes_last_valid_target(self) -> None:
         params = np.arange(10, dtype=np.float32)[:, None]
         mids = np.arange(10, dtype=np.float32)
-        ds_one_step = WindowedLOBParamsDataset(params, mids, history_len=3, future_horizon=0)
+        ds_one_step = WindowedParamSequenceDataset(params, mids, history_len=3, future_horizon=0)
         self.assertEqual(ds_one_step.start_indices[-1], 9)
-        ds_two_step = WindowedLOBParamsDataset(params, mids, history_len=3, future_horizon=1)
+        ds_two_step = WindowedParamSequenceDataset(params, mids, history_len=3, future_horizon=1)
         self.assertEqual(ds_two_step.start_indices[-1], 8)
 
     def test_parse_forecast_datasets_rejects_high_level_ecg_until_checkpoint_is_supported(self) -> None:
@@ -87,7 +87,7 @@ class ExtrapolationFixesTest(unittest.TestCase):
                 prepare_long_term_headered_ecg_dataset(Path(tmpdir), history_len=4, horizon=2)
 
     def test_horizon_one_forecast_schedule_uses_target_without_future_tuple(self) -> None:
-        cfg = LOBConfig(
+        cfg = OTFlowConfig(
             device=torch.device("cpu"),
             levels=1,
             token_dim=1,
@@ -139,7 +139,7 @@ class ExtrapolationFixesTest(unittest.TestCase):
         self.assertTrue(np.isfinite(metrics["mse"]))
 
     def test_forecast_schedule_uses_deterministic_example_subset(self) -> None:
-        cfg = LOBConfig(
+        cfg = OTFlowConfig(
             device=torch.device("cpu"),
             levels=1,
             token_dim=1,

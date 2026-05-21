@@ -4,7 +4,7 @@ Diffusion-Flow-Inference evaluates fixed schedules after mapping them onto norma
 
 ## Source Layout
 
-- `src/diffusion_flow_inference/data/`: Monash, LOB, medical dataset definitions, experiment plans, and project paths.
+- `src/diffusion_flow_inference/data/`: Monash, conditional-generation, medical dataset definitions, experiment plans, and project paths.
 - `src/diffusion_flow_inference/models/`: OTFlow configuration, conditioning, backbone modules, training, and model utilities.
 - `src/diffusion_flow_inference/schedule_transfer/`: schedule grids, registries, table helpers, signal traces, and diagnostics.
 - `src/diffusion_flow_inference/evaluation/`: checkpoint loading, runner support, solver mappings, and sampling helpers.
@@ -61,5 +61,5 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s
 Dry-run prep from the repository root accepts project-relative paths:
 
 ```bash
-CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 dfi-run-schedules --forecast_datasets '' --lob_datasets '' --backbone_manifest outputs/backbone_matrix/backbone_manifest.json
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 dfi-run-schedules --forecast_datasets '' --conditional_generation_datasets '' --backbone_manifest outputs/backbone_matrix/backbone_manifest.json
 ```

@@ -24,10 +24,10 @@ import torch
 from torch.utils.data import DataLoader, RandomSampler
 from torch.optim.swa_utils import AveragedModel
 
-from diffusion_flow_inference.models.config import LOBConfig
+from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.models.modules import EMAModel
 from diffusion_flow_inference.models.otflow_model import OTFlow
-from diffusion_flow_inference.data.otflow_datasets import L2FeatureMap, WindowedLOBParamsDataset, compute_basic_l2_metrics
+from diffusion_flow_inference.data.otflow_datasets import L2FeatureMap, WindowedParamSequenceDataset, compute_basic_l2_metrics
 from diffusion_flow_inference.data.otflow_medical_datasets import SLEEP_EDF_DATASET_KEY, SLEEP_EDF_STAGE_NAMES
 from diffusion_flow_inference.models.otflow_utils import flatten_dict, unflatten_to_nested, microstructure_series
 
@@ -46,7 +46,7 @@ def seed_all(seed: int = 0):
 
 
 def make_loader(
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     batch_size: int,
     shuffle: bool = True,
     num_workers: int = 0,
@@ -79,7 +79,7 @@ def make_loader(
 
 
 def _parse_batch(batch):
-    """Unpack the dataset tuple emitted by WindowedLOBParamsDataset.
+    """Unpack the dataset tuple emitted by WindowedParamSequenceDataset.
 
     Supports:
       - (hist, tgt, meta)
@@ -118,12 +118,12 @@ def _torch_sync(device: torch.device):
         torch.cuda.synchronize(device)
 
 
-def _amp_enabled(cfg: LOBConfig, device: torch.device) -> bool:
+def _amp_enabled(cfg: OTFlowConfig, device: torch.device) -> bool:
     return bool(getattr(cfg.train, "use_amp", False)) and device.type == "cuda" and torch.cuda.is_available()
 
 
 @contextmanager
-def _autocast_context(cfg: LOBConfig, device: torch.device):
+def _autocast_context(cfg: OTFlowConfig, device: torch.device):
     if _amp_enabled(cfg, device):
         with torch.cuda.amp.autocast(dtype=torch.float16):
             yield
@@ -152,7 +152,7 @@ def _temporary_eval_seed(seed: int):
             torch.cuda.set_rng_state_all(cuda_states)
 
 
-def resolve_context_length(max_available: int, *, horizon: int, cfg: Optional[LOBConfig]) -> int:
+def resolve_context_length(max_available: int, *, horizon: int, cfg: Optional[OTFlowConfig]) -> int:
     max_available = max(1, int(max_available))
     if cfg is None or not bool(getattr(cfg, "adaptive_context", False)):
         return max_available
@@ -175,7 +175,7 @@ def crop_history_window(hist: torch.Tensor, context_len: int) -> torch.Tensor:
     raise ValueError(f"Unsupported history tensor rank: {hist.dim()}")
 
 
-def sample_training_context_length(max_available: int, cfg: Optional[LOBConfig]) -> int:
+def sample_training_context_length(max_available: int, cfg: Optional[OTFlowConfig]) -> int:
     max_available = max(1, int(max_available))
     if cfg is None or not bool(getattr(cfg, "train_variable_context", False)):
         return max_available
@@ -216,7 +216,7 @@ def _future_time_context_seq(ds, t0: int, horizon: int) -> Optional[torch.Tensor
 # -----------------------------
 # Training
 # -----------------------------
-def _build_scheduler(opt: torch.optim.Optimizer, cfg: LOBConfig, total_steps: int):
+def _build_scheduler(opt: torch.optim.Optimizer, cfg: OTFlowConfig, total_steps: int):
     """Build an optional LR scheduler (warmup + cosine decay)."""
     schedule = getattr(cfg, "lr_schedule", "constant").lower()
     warmup = int(getattr(cfg, "lr_warmup_steps", 0))
@@ -241,12 +241,12 @@ def _normalize_model_name(model_name: str) -> str:
     return normalized
 
 
-def _validate_model_dataset_support(model_name: str, cfg: LOBConfig) -> None:
+def _validate_model_dataset_support(model_name: str, cfg: OTFlowConfig) -> None:
     del cfg
     _normalize_model_name(model_name)
 
 
-def _build_model(model_name: str, cfg: LOBConfig, device: torch.device) -> torch.nn.Module:
+def _build_model(model_name: str, cfg: OTFlowConfig, device: torch.device) -> torch.nn.Module:
     _validate_model_dataset_support(model_name, cfg)
     return OTFlow(cfg).to(device)
 
@@ -269,8 +269,8 @@ def _compute_training_loss(
 
 
 def train_loop(
-    ds: WindowedLOBParamsDataset,
-    cfg: LOBConfig,
+    ds: WindowedParamSequenceDataset,
+    cfg: OTFlowConfig,
     model_name: str = "otflow",
     steps: int = 10_000,
     log_every: int = 200,
@@ -618,7 +618,7 @@ class _SmallMLP(torch.nn.Module):
         return self.net(x)
 
 
-def _downstream_device(cfg: LOBConfig) -> torch.device:
+def _downstream_device(cfg: OTFlowConfig) -> torch.device:
     device = getattr(cfg, "device", torch.device("cpu"))
     if isinstance(device, str):
         return torch.device(device)
@@ -1230,7 +1230,7 @@ def _compare_sleep_sequences(
 
 def _evaluate_generation_main_metrics(
     rows: Sequence[Dict[str, Any]],
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     horizon: int,
     seed: int,
@@ -1561,7 +1561,7 @@ def compare_l2_sequences(
 # -----------------------------
 # Evaluation
 # -----------------------------
-def _valid_eval_indices(ds: WindowedLOBParamsDataset, horizon: int) -> np.ndarray:
+def _valid_eval_indices(ds: WindowedParamSequenceDataset, horizon: int) -> np.ndarray:
     starts = np.asarray(ds.start_indices, dtype=np.int64)
     if len(starts) == 0:
         return starts
@@ -1569,7 +1569,7 @@ def _valid_eval_indices(ds: WindowedLOBParamsDataset, horizon: int) -> np.ndarra
     return starts[starts + int(horizon) <= segment_ends]
 
 
-def _sleep_stage_index_for_t0(ds: WindowedLOBParamsDataset, t0: int) -> int:
+def _sleep_stage_index_for_t0(ds: WindowedParamSequenceDataset, t0: int) -> int:
     if ds.cond is None or int(t0) < 0 or int(t0) >= int(len(ds.cond)):
         return -1
     cond = np.asarray(ds.cond[int(t0)], dtype=np.float32).reshape(-1)
@@ -1578,7 +1578,7 @@ def _sleep_stage_index_for_t0(ds: WindowedLOBParamsDataset, t0: int) -> int:
     return int(np.argmax(cond))
 
 
-def _stage_counts_for_t0s(ds: WindowedLOBParamsDataset, t0s: Sequence[int]) -> Dict[str, int]:
+def _stage_counts_for_t0s(ds: WindowedParamSequenceDataset, t0s: Sequence[int]) -> Dict[str, int]:
     metadata = dict(getattr(ds, "dataset_metadata", {}) or {})
     stage_names = list(metadata.get("stage_names", list(SLEEP_EDF_STAGE_NAMES)))
     counts = {str(name): 0 for name in stage_names}
@@ -1590,7 +1590,7 @@ def _stage_counts_for_t0s(ds: WindowedLOBParamsDataset, t0s: Sequence[int]) -> D
 
 
 def _choose_sleep_stage_stratified_windows(
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     valid_ts: np.ndarray,
     *,
     n_windows: int,
@@ -1620,7 +1620,7 @@ def _choose_sleep_stage_stratified_windows(
     return np.asarray(chosen, dtype=np.int64)
 
 
-def select_eval_window_starts(ds: WindowedLOBParamsDataset, horizon: int, n_windows: int, seed: int) -> np.ndarray:
+def select_eval_window_starts(ds: WindowedParamSequenceDataset, horizon: int, n_windows: int, seed: int) -> np.ndarray:
     valid_ts = _valid_eval_indices(ds, int(horizon))
     if len(valid_ts) == 0:
         raise ValueError(f"No valid windows for horizon={horizon}.")
@@ -1633,13 +1633,13 @@ def select_eval_window_starts(ds: WindowedLOBParamsDataset, horizon: int, n_wind
     return np.asarray(rng.choice(valid_ts, size=int(n_windows), replace=True), dtype=np.int64)
 
 
-def _denorm_params_seq(ds: WindowedLOBParamsDataset, x_norm: np.ndarray) -> np.ndarray:
+def _denorm_params_seq(ds: WindowedParamSequenceDataset, x_norm: np.ndarray) -> np.ndarray:
     if ds.params_mean is not None and ds.params_std is not None:
         return (x_norm * ds.params_std[None, :] + ds.params_mean[None, :]).astype(np.float32)
     return x_norm.astype(np.float32)
 
 
-def _get_dataset_item_by_t(ds: WindowedLOBParamsDataset, t0: int):
+def _get_dataset_item_by_t(ds: WindowedParamSequenceDataset, t0: int):
     idxs = np.where(np.asarray(ds.start_indices) == int(t0))[0]
     if len(idxs) == 0:
         raise IndexError(f"t={t0} not in dataset start_indices.")
@@ -1648,9 +1648,9 @@ def _get_dataset_item_by_t(ds: WindowedLOBParamsDataset, t0: int):
 
 @torch.no_grad()
 def eval_one_window(
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     horizon: int = 200,
     nfe: int = 1,
     seed: int = 0,
@@ -1861,9 +1861,9 @@ def _wrap_scalar_as_mean_std(value: float) -> Dict[str, float]:
 
 @torch.no_grad()
 def eval_many_windows(
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     horizon: int = 200,
     nfe: int = 1,
     n_windows: int = 50,
@@ -2015,9 +2015,9 @@ def eval_many_windows(
 
 @torch.no_grad()
 def eval_rollout_horizons(
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     horizons: Sequence[int] = (1, 10, 50, 100, 200),
     nfe: int = 1,
     n_windows: int = 50,
@@ -2034,9 +2034,9 @@ def eval_rollout_horizons(
 # -----------------------------
 @torch.no_grad()
 def benchmark_sampling_latency(
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     horizon: int = 200,
     nfe: int = 1,
     n_trials: int = 20,
@@ -2090,9 +2090,9 @@ def benchmark_sampling_latency(
 
 @torch.no_grad()
 def eval_speed_quality_nfe(
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     nfe_list: Sequence[int] = (1, 2, 4, 8, 16, 32),
     horizon: int = 200,
     n_windows: int = 30,
@@ -2110,16 +2110,16 @@ def eval_speed_quality_nfe(
 # -----------------------------
 # Ablations (C)
 # -----------------------------
-def clone_cfg_with_overrides(cfg: LOBConfig, overrides: Dict[str, Any]) -> LOBConfig:
+def clone_cfg_with_overrides(cfg: OTFlowConfig, overrides: Dict[str, Any]) -> OTFlowConfig:
     cfg2 = copy.deepcopy(cfg)
     cfg2.apply_overrides(**overrides)
     return cfg2
 
 
 def run_ablation_grid(
-    ds_train: WindowedLOBParamsDataset,
-    ds_eval: WindowedLOBParamsDataset,
-    base_cfg: LOBConfig,
+    ds_train: WindowedParamSequenceDataset,
+    ds_eval: WindowedParamSequenceDataset,
+    base_cfg: OTFlowConfig,
     ablations: Sequence[Tuple[str, Dict[str, Any]]],
     model_name: str = "otflow",
     train_steps: int = 10_000,
@@ -2190,9 +2190,9 @@ def summarize_ablation_for_table(
 @torch.no_grad()
 def save_qualitative_window_npz(
     save_path: str,
-    ds: WindowedLOBParamsDataset,
+    ds: WindowedParamSequenceDataset,
     model: torch.nn.Module,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     horizon: int = 200,
     nfe: int = 1,
     seed: int = 0,

@@ -329,7 +329,7 @@ def _runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
         str(DEFAULT_RESULTS_DIR / "_collect_runner_unused"),
         "--forecast_datasets",
         ",".join(datasets),
-        "--lob_datasets",
+        "--conditional_generation_datasets",
         "",
         "--target_nfe_values",
         ",".join(str(nfe) for nfe in target_nfes),

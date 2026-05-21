@@ -7,7 +7,7 @@ from typing import Dict, List, Mapping
 
 import torch
 
-from diffusion_flow_inference.models.config import LOBConfig
+from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.data.otflow_datasets import (
     DEFAULT_SYNTHETIC_LENGTH,
     build_dataset_splits_from_cryptos,
@@ -292,8 +292,8 @@ def apply_otflow_dataset_preset(args, variant: str | None = None):
     return args
 
 
-def build_cfg_from_args(args) -> LOBConfig:
-    cfg = LOBConfig()
+def build_cfg_from_args(args) -> OTFlowConfig:
+    cfg = OTFlowConfig()
     cfg.apply_overrides(
         device=torch.device(args.device),
         levels=args.levels,
@@ -328,7 +328,7 @@ def build_cfg_from_args(args) -> LOBConfig:
     return cfg
 
 
-def build_dataset_splits(args, cfg: LOBConfig):
+def build_dataset_splits(args, cfg: OTFlowConfig):
     dataset = args.dataset
     if dataset == "npz_l2":
         if not args.data_path:

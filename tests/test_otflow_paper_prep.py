@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,7 +110,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                     tmpdir,
                     "--forecast_datasets",
                     "",
-                    "--lob_datasets",
+                    "--conditional_generation_datasets",
                     "",
                     "--backbone_manifest",
                     str(manifest),
@@ -119,12 +120,15 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             summary = json.loads((Path(tmpdir) / "combined_summary.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["runner_mode"], "diffusion_flow_time_reparameterization")
         self.assertEqual(summary["method_key"], "diffusion_flow_time_reparameterization")
+        self.assertEqual(summary["conditional_generation_datasets"], [])
+        retired_dataset_key = "lo" + "b_datasets"
+        self.assertNotIn(retired_dataset_key, summary)
         self.assertIn("flowts_power_sampling", summary["baseline_schedule_keys"])
         self.assertEqual(summary["transfer_schedule_keys"], ["ays", "gits", "ots"])
 
-    def test_lob_build_row_preserves_full_conditional_metrics(self) -> None:
+    def test_conditional_generation_build_row_preserves_full_metrics(self) -> None:
         row = runner._build_row(
-            benchmark_family="lob_conditional_generation",
+            benchmark_family="conditional_generation",
             split_phase="locked_test",
             seed=0,
             dataset="sleep_edf",
@@ -199,7 +203,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                     tmpdir,
                     "--forecast_datasets",
                     "",
-                    "--lob_datasets",
+                    "--conditional_generation_datasets",
                     "",
                     "--backbone_manifest",
                     str(manifest),
@@ -218,7 +222,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                     tmpdir,
                     "--forecast_datasets",
                     "",
-                    "--lob_datasets",
+                    "--conditional_generation_datasets",
                     "",
                     "--backbone_manifest",
                     str(manifest),
@@ -241,7 +245,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                 [
                     "--forecast_datasets",
                     "",
-                    "--lob_datasets",
+                    "--conditional_generation_datasets",
                     "cryptos",
                     "--backbone_manifest",
                     str(manifest),
@@ -253,7 +257,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                 [
                     "--forecast_datasets",
                     "",
-                    "--lob_datasets",
+                    "--conditional_generation_datasets",
                     "cryptos",
                     "--backbone_manifest",
                     str(manifest),
@@ -269,7 +273,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             [
                 "--forecast_datasets",
                 "",
-                "--lob_datasets",
+                "--conditional_generation_datasets",
                 "",
                 "--backbone_manifest",
                 str(manifest),
@@ -281,7 +285,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             [
                 "--forecast_datasets",
                 "",
-                "--lob_datasets",
+                "--conditional_generation_datasets",
                 "",
                 "--backbone_manifest",
                 str(manifest),
@@ -322,6 +326,32 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
         )
         for name in removed:
             self.assertNotIn(name.removesuffix(".py"), source_text)
+
+    def test_retired_generic_naming_tokens_are_absent(self) -> None:
+        retired_patterns = (
+            r"RectifiedFlowL[O]B",
+            r"L[O]BConfig",
+            r"L[O]BDataConfig",
+            r"WindowedL[O]BParamsDataset",
+            r"L[O]B_FAMILY",
+            r"--l[o]b_datasets",
+            r"l[o]b_conditional_generation",
+            r"['\"]l[o]b['\"]",
+            r"[/\\]l[o]b[/\\]",
+            r"models\.otflow_backbone",
+        )
+        source_paths = [
+            *Path(PROJECT_ROOT / "src").rglob("*.py"),
+            *Path(PROJECT_ROOT / "tests").rglob("*.py"),
+            *Path(PROJECT_ROOT / "scripts").rglob("*.py"),
+            PROJECT_ROOT / "README.md",
+            PROJECT_ROOT / "pyproject.toml",
+        ]
+        source_text = "\n".join(
+            path.read_text(encoding="utf-8") for path in source_paths if path.exists() and path != Path(__file__)
+        )
+        for pattern in retired_patterns:
+            self.assertIsNone(re.search(pattern, source_text), pattern)
 
     def test_backbone_manifest_tracks_40_active_artifacts_without_private_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

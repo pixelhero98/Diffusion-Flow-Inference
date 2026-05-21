@@ -5,7 +5,7 @@ Data + representation utilities for Level-2 (L2) limit order books.
 Contains:
 - L2FeatureMap: valid-by-construction encoding/decoding (raw L2 <-> unconstrained params)
 - Standardization helpers
-- WindowedLOBParamsDataset (history->target windows; optional future horizon for rollout)
+- WindowedParamSequenceDataset (history->target windows; optional future horizon for rollout)
 - Builders for prepared NPZ, crypto, and synthetic sequences
 - Basic raw-space metrics
 - NEW: chronological split builders with train-only normalization (anti-leakage)
@@ -26,7 +26,7 @@ from typing import Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from diffusion_flow_inference.models.config import LOBConfig
+from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.data.otflow_paths import project_data_root
 
 ArrayLike = Union[np.ndarray, torch.Tensor]
@@ -175,7 +175,7 @@ def standardize_cond(cond: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarr
     return apply_standardizer(cond, mu, sig), mu, sig
 
 
-def _future_horizon_from_cfg(cfg: LOBConfig) -> int:
+def _future_horizon_from_cfg(cfg: OTFlowConfig) -> int:
     required = 0
     rollout_mode = str(getattr(cfg.model, "rollout_mode", "autoregressive")).strip().lower()
     if rollout_mode == "non_ar":
@@ -183,7 +183,7 @@ def _future_horizon_from_cfg(cfg: LOBConfig) -> int:
     return int(max(0, required))
 
 
-def _time_feature_mode(cfg: LOBConfig) -> str:
+def _time_feature_mode(cfg: OTFlowConfig) -> str:
     use_elapsed = bool(getattr(cfg.model, "use_time_features", False))
     use_gap_only = bool(getattr(cfg.model, "use_time_gaps", False))
     if use_elapsed and use_gap_only:
@@ -195,7 +195,7 @@ def _time_feature_mode(cfg: LOBConfig) -> str:
     return "none"
 
 
-def _use_time_features_enabled(cfg: LOBConfig) -> bool:
+def _use_time_features_enabled(cfg: OTFlowConfig) -> bool:
     return _time_feature_mode(cfg) != "none"
 
 
@@ -208,7 +208,7 @@ def _time_feature_dim(mode: str) -> int:
     return 0
 
 
-def _set_model_cond_dim(cfg: LOBConfig, cond_dim: int) -> None:
+def _set_model_cond_dim(cfg: OTFlowConfig, cond_dim: int) -> None:
     resolved = int(cond_dim)
     if resolved <= 0:
         raise ValueError(f"Condition dimension must be positive, got {cond_dim}.")
@@ -358,7 +358,7 @@ def _build_time_features(
 # -----------------------------
 # Derived conditioning features (from params + mids)
 # -----------------------------
-def build_cond_features(params_raw: np.ndarray, mids: np.ndarray, cfg: LOBConfig) -> np.ndarray:
+def build_cond_features(params_raw: np.ndarray, mids: np.ndarray, cfg: OTFlowConfig) -> np.ndarray:
     """Compute per-timestep conditioning features from raw params."""
     L = cfg.levels
     eps = cfg.eps
@@ -424,7 +424,7 @@ def build_cond_features(params_raw: np.ndarray, mids: np.ndarray, cfg: LOBConfig
 # -----------------------------
 # Dataset
 # -----------------------------
-class WindowedLOBParamsDataset(torch.utils.data.Dataset):
+class WindowedParamSequenceDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         params: np.ndarray,
@@ -601,11 +601,11 @@ def load_l2_npz(path: str) -> Dict[str, np.ndarray]:
 def _build_windowed_dataset(
     params_raw: np.ndarray,
     mids: np.ndarray,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     stride: int,
     *,
     timestamps: Optional[np.ndarray] = None,
-) -> WindowedLOBParamsDataset:
+) -> WindowedParamSequenceDataset:
     """Build a windowed LOB dataset from one parameterized array bundle."""
     # params
     if cfg.standardize:
@@ -647,7 +647,7 @@ def _build_windowed_dataset(
         else:
             time_feature_source = "timestamps"
 
-    return WindowedLOBParamsDataset(
+    return WindowedParamSequenceDataset(
         params=params,
         mids=mids,
         history_len=cfg.history_len,
@@ -831,11 +831,11 @@ def _generate_synthetic_l2(
 
 
 def build_dataset_synthetic(
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     length: int = DEFAULT_SYNTHETIC_LENGTH,
     seed: int = 0,
     stride: int = 1,
-) -> WindowedLOBParamsDataset:
+) -> WindowedParamSequenceDataset:
     ask_p, ask_v, bid_p, bid_v = _generate_synthetic_l2(cfg.levels, length, seed, cfg.eps)
     fm = L2FeatureMap(cfg.levels, cfg.eps)
     params_raw, mids = fm.encode_sequence(ask_p, ask_v, bid_p, bid_v)
@@ -947,7 +947,7 @@ def _resolve_segment_split_bounds(
 def _make_windowed_dataset_from_arrays(
     params_full: np.ndarray,
     mids_full: np.ndarray,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     stride: int,
     start_t: int,
@@ -964,7 +964,7 @@ def _make_windowed_dataset_from_arrays(
     valid_start_mask_full: Optional[np.ndarray] = None,
     dataset_kind: Optional[str] = None,
     dataset_metadata: Optional[Dict[str, object]] = None,
-) -> WindowedLOBParamsDataset:
+) -> WindowedParamSequenceDataset:
     """Construct a split dataset [start_t,end_t) with left history buffer and fixed normalization stats."""
     H = int(cfg.history_len)
 
@@ -1022,7 +1022,7 @@ def _make_windowed_dataset_from_arrays(
             time_features_seg = time_features_full[left:right]
         time_features_seg = time_features_seg.astype(np.float32, copy=False)
 
-    ds = WindowedLOBParamsDataset(
+    ds = WindowedParamSequenceDataset(
         params=params_seg,
         mids=mids_seg,
         history_len=cfg.history_len,
@@ -1060,7 +1060,7 @@ def _make_windowed_dataset_from_arrays(
 def build_dataset_splits_from_arrays(
     params_raw: np.ndarray,
     mids: np.ndarray,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     timestamps: Optional[np.ndarray] = None,
     cond_raw_full: Optional[np.ndarray] = None,
@@ -1081,7 +1081,7 @@ def build_dataset_splits_from_arrays(
     Parameters
     ----------
     params_raw, mids : full timeline arrays [T, D], [T]
-    cfg : LOBConfig
+    cfg : OTFlowConfig
     stride_train, stride_eval : int
         Often use denser train and sparser eval.
     train_frac/val_frac/test_frac OR train_end/val_end :
@@ -1090,7 +1090,7 @@ def build_dataset_splits_from_arrays(
     Returns
     -------
     dict with keys:
-      - 'train', 'val', 'test' : WindowedLOBParamsDataset
+      - 'train', 'val', 'test' : WindowedParamSequenceDataset
       - 'stats' : normalization statistics and split bounds
     """
     T = int(len(params_raw))
@@ -1258,7 +1258,7 @@ def build_dataset_splits_from_arrays(
 
 def build_dataset_splits_from_npz_l2(
     path: str,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1318,7 +1318,7 @@ def default_optiver_npz_path() -> str:
 
 def build_dataset_splits_from_cryptos(
     path: str,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1345,7 +1345,7 @@ def build_dataset_splits_from_cryptos(
 
 def build_dataset_splits_from_es_mbp_10(
     path: str,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1372,7 +1372,7 @@ def build_dataset_splits_from_es_mbp_10(
 
 def build_dataset_splits_from_optiver(
     path: str,
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     *,
     stride_train: int = 1,
     stride_eval: int = 1,
@@ -1398,7 +1398,7 @@ def build_dataset_splits_from_optiver(
 
 
 def build_dataset_splits_synthetic(
-    cfg: LOBConfig,
+    cfg: OTFlowConfig,
     length: int = DEFAULT_SYNTHETIC_LENGTH,
     seed: int = 0,
     *,
@@ -1449,7 +1449,7 @@ def compute_basic_l2_metrics(ask_p: np.ndarray, ask_v: np.ndarray, bid_p: np.nda
 
 __all__ = [
     "L2FeatureMap",
-    "WindowedLOBParamsDataset",
+    "WindowedParamSequenceDataset",
     "build_dataset_synthetic",
     "build_dataset_splits_from_arrays",
     "build_dataset_splits_from_npz_l2",
