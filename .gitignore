@@ -17,15 +17,15 @@ venv/
 .env.*
 
 # Generated or large project artifacts
-data/
-paper_datasets/
-outputs/
-results/
-figures/
-checkpoints/
-tables/
-progress_snapshot/
-safe_resume_patch/
+/data/
+/paper_datasets/
+/outputs/
+/results/
+/figures/
+/checkpoints/
+/tables/
+/progress_snapshot/
+/safe_resume_patch/
 *.zip
 *.tar
 *.tar.gz

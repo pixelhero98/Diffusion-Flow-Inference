@@ -1,15 +1,15 @@
-
 # Diffusion-Flow-Inference
 
-Diffusion-Flow-Inference evaluates optimized diffusion schedules after mapping them onto normalized flow time for fixed OTFlow backbones. The active schedules are `uniform`, `late_power_3`, `ays`, `gits`, and `ots`; the transferred diffusion schedules are `ays`, `gits`, and `ots`.
+Diffusion-Flow-Inference evaluates fixed schedules after mapping them onto normalized flow time for fixed OTFlow backbones. The active schedules are `uniform`, `late_power_3`, `flowts_power_sampling`, `ays`, `gits`, and `ots`; the transferred diffusion schedules are `ays`, `gits`, and `ots`.
 
-## Active Code Path
+## Source Layout
 
-- `code/diffusion_flow_time_reparameterization.py`: fixed-schedule evaluation entrypoint.
-- `code/diffusion_flow_schedules.py`: schedule construction for uniform, late-power-3, AYS, GITS, and OTS.
-- `code/otflow_evaluation_support.py`: checkpoint loading, dataset split resolution, solver mappings, and metric helpers.
-- `code/otflow_paper_registry.py`: method, schedule, and solver registry.
-- `code/otflow_model.py`, `code/conditioning.py`, `code/config.py`, `code/modules.py`, and `code/otflow_train_val.py`: OTFlow backbone model and training/evaluation utilities.
+- `src/diffusion_flow_inference/data/`: Monash, LOB, medical dataset definitions, experiment plans, and project paths.
+- `src/diffusion_flow_inference/models/`: OTFlow configuration, conditioning, backbone modules, training, and model utilities.
+- `src/diffusion_flow_inference/schedule_transfer/`: schedule grids, registries, table helpers, signal traces, and diagnostics.
+- `src/diffusion_flow_inference/evaluation/`: checkpoint loading, runner support, solver mappings, and sampling helpers.
+- `src/diffusion_flow_inference/visualization/`: fixed-schedule diagnostic figure builders.
+- `scripts/`: thin command-line wrappers for the packaged entry points.
 
 ## Data, Outputs, And Backbones
 
@@ -31,13 +31,19 @@ A prepared local backbone matrix should report 40 ready checkpoint artifacts and
 
 ## Environment
 
-Pip:
+Install the package in editable mode:
+
+```bash
+python -m pip install -e .
+```
+
+Or install runtime dependencies directly:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-Conda:
+Conda users can create the environment with:
 
 ```bash
 conda env create -f environment.conda.yml
@@ -48,12 +54,12 @@ Raw medical dataset preparation requires `OTFLOW_MEDICAL_STAGING_ROOT` to point 
 ## CPU Smoke Checks
 
 ```bash
-cd code
-CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s . -p 'test_*.py'
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src tests scripts
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Dry-run prep from the repository root accepts project-relative paths:
 
 ```bash
-CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python code/diffusion_flow_time_reparameterization.py --forecast_datasets '' --lob_datasets '' --backbone_manifest outputs/backbone_matrix/backbone_manifest.json
+CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 dfi-run-schedules --forecast_datasets '' --lob_datasets '' --backbone_manifest outputs/backbone_matrix/backbone_manifest.json
 ```

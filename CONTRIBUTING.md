@@ -7,14 +7,8 @@ paths.
 Before opening a change, run:
 
 ```bash
-cd code
-PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s . -p 'test_*.py'
-```
-
-For future-work changes, also run:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s future_work/bayesian_rl_schedule_optimization/tests -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src tests scripts
+PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Keep compatibility branches and historical result-reuse logic out of active
