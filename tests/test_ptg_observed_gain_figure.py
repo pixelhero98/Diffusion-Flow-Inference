@@ -110,15 +110,6 @@ class PtgObservedGainFigureTests(unittest.TestCase):
         expected = 0.5 * (20.0 + 25.0)
         self.assertAlmostEqual(stats[0]["integration_gain_percent_mean"], expected)
 
-    def test_20k_filter_has_180_points_and_excludes_late_power(self) -> None:
-        zip_path = ptg_fig.DEFAULT_ZIP_PATH
-        if not zip_path.exists():
-            self.skipTest(f"Missing local 20k.zip at {zip_path}")
-        rows = ptg_fig.load_observed_gain_rows(zip_path)
-        self.assertEqual(len(rows), 180)
-        self.assertFalse(any(key[3] == "late_power_3" for key in rows))
-        self.assertEqual({key[3] for key in rows}, set(ptg_fig.TRANSFER_SCHEDULES))
-
     def test_synthetic_points_are_exact_scope(self) -> None:
         payload = ptg_fig.synthetic_payload()
         self.assertEqual(payload["main_ptg_key"], "ptg_local_defect_eta005")

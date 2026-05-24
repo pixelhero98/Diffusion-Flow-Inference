@@ -17,6 +17,7 @@ venv/
 .env.*
 
 # Generated or large project artifacts
+/lesson.md
 /data/
 /paper_datasets/
 /outputs/

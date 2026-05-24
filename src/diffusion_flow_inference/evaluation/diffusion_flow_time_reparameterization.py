@@ -86,9 +86,6 @@ ROW_RECORD_FIELDS: Tuple[str, ...] = (
     "scheduler_variant_name",
     "schedule_name",
     "row_signature",
-    "signal_trace_key",
-    "signal_validation_spearman",
-    "velocity_variation_scale",
     "reference_macro_factor",
     "paper_duplicate_count",
     "experiment_scope",
@@ -255,7 +252,6 @@ def _protocol_config_fingerprint(cli_args: argparse.Namespace) -> str:
         "eval_horizon": int(cli_args.eval_horizon),
         "eval_windows_val": int(cli_args.eval_windows_val),
         "eval_windows_test": int(cli_args.eval_windows_test),
-        "calibration_trace_samples": int(cli_args.calibration_trace_samples),
         "dataset_root": _path_fingerprint(str(cli_args.dataset_root)),
         "shared_backbone_root": _path_fingerprint(str(cli_args.shared_backbone_root)),
         "backbone_manifest": _path_fingerprint(str(cli_args.backbone_manifest)) if str(cli_args.backbone_manifest).strip() else None,
@@ -423,9 +419,6 @@ def _build_row(*, benchmark_family: str, split_phase: str, seed: int, dataset: s
         "scheduler_variant_name": schedule_display_name(str(scheduler_key)),
         "schedule_name": schedule_display_name(str(scheduler_key)),
         "row_signature": str(row_signature),
-        "signal_trace_key": None,
-        "signal_validation_spearman": None,
-        "velocity_variation_scale": None,
         "reference_macro_factor": None,
         "paper_duplicate_count": int(details.get("paper_duplicate_count", 0) or 0),
         "experiment_scope": solver_experiment_scope(str(solver_key)),
@@ -730,7 +723,6 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dataset_seed", type=int, default=0)
     ap.add_argument("--num_eval_samples", type=int, default=5)
-    ap.add_argument("--calibration_trace_samples", type=int, default=1)
     ap.add_argument("--eval_horizon", type=int, default=0)
     ap.add_argument("--eval_windows_val", type=int, default=0)
     ap.add_argument("--eval_windows_test", type=int, default=0)

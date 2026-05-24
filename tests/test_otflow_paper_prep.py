@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import importlib
 import re
+import subprocess
+import tomllib
 import tempfile
 import unittest
 from pathlib import Path
@@ -372,6 +375,78 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
     def test_site_specific_ops_scripts_are_not_in_source_release(self) -> None:
         self.assertFalse((PROJECT_ROOT / "code" / "ops").exists())
         self.assertFalse(any(PROJECT_ROOT.glob("opsi*")))
+
+    def test_local_process_artifacts_are_not_tracked_or_present(self) -> None:
+        local_note = PROJECT_ROOT / ("lesson" + ".md")
+        self.assertFalse(local_note.exists())
+        ignore_file = PROJECT_ROOT / ".gitignore"
+        self.assertIn("/" + local_note.name, ignore_file.read_text(encoding="utf-8"))
+        if (PROJECT_ROOT / ".git").exists():
+            result = subprocess.run(
+                ["git", "ls-files", "--", local_note.name],
+                cwd=PROJECT_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.stdout.strip(), "")
+
+    def test_source_release_has_no_private_or_stale_tokens(self) -> None:
+        forbidden = (
+            "lesson" + ".md",
+            "info" + "_growth",
+            "native" + "_info" + "_growth",
+            "hardness" + "_mismatch",
+            "dfi-build-" + "hardness-figure",
+            "C:" + "\\",
+            "ud" + "22686",
+            "Py" + "charmProjects",
+            "yzn" + "3090",
+            "20k" + ".zip",
+            "DEFAULT" + "_ZIP" + "_PATH",
+            "RELATIVE" + "_STATS" + "_NAME",
+            "relative" + "_seed" + "_stats",
+            "load" + "_observed" + "_gain" + "_rows",
+            "observed" + "_gain" + "_from" + "_relative" + "_row",
+        )
+        source_paths = []
+        source_suffixes = {".cfg", ".ini", ".json", ".md", ".py", ".toml", ".txt", ".yaml", ".yml"}
+        for root in (PROJECT_ROOT / "src", PROJECT_ROOT / "tests", PROJECT_ROOT / "scripts"):
+            source_paths.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file()
+                and path.suffix in source_suffixes
+                and not any(part.endswith(".egg-info") for part in path.parts)
+                and "__pycache__" not in path.parts
+            )
+        source_paths.extend([PROJECT_ROOT / "README.md", PROJECT_ROOT / "pyproject.toml"])
+        source_text = "\n".join(path.read_text(encoding="utf-8") for path in source_paths if path.exists())
+        for token in forbidden:
+            self.assertNotIn(token, source_text, token)
+
+    def test_project_scripts_and_wrappers_resolve(self) -> None:
+        pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        scripts = pyproject["project"]["scripts"]
+        expected_scripts = {
+            "dfi-run-schedules": "diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization:main",
+            "dfi-build-velocity-variation-figure": "diffusion_flow_inference.visualization.build_velocity_variation_difficulty_figure:main",
+            "dfi-build-ptg-figure": "diffusion_flow_inference.visualization.build_ptg_observed_gain_figure:main",
+        }
+        self.assertEqual(scripts, expected_scripts)
+        for target in scripts.values():
+            module_name, attr_name = target.split(":", 1)
+            self.assertTrue(callable(getattr(importlib.import_module(module_name), attr_name)))
+
+        wrappers = {
+            "diffusion_flow_time_reparameterization.py": expected_scripts["dfi-run-schedules"],
+            "build_velocity_variation_difficulty_figure.py": expected_scripts["dfi-build-velocity-variation-figure"],
+            "build_ptg_observed_gain_figure.py": expected_scripts["dfi-build-ptg-figure"],
+        }
+        for wrapper_name, target in wrappers.items():
+            module_name, attr_name = target.split(":", 1)
+            wrapper_text = (PROJECT_ROOT / "scripts" / wrapper_name).read_text(encoding="utf-8")
+            self.assertIn(f"from {module_name} import {attr_name}", wrapper_text)
 
     def test_retired_source_trees_are_absent(self) -> None:
         self.assertFalse((PROJECT_ROOT / "code").exists())

@@ -4,7 +4,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 import numpy as np
 
@@ -19,19 +19,8 @@ DEFAULT_PNG = DEFAULT_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace
 DEFAULT_PDF = DEFAULT_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.pdf"
 VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY = "velocity_variation_difficulty_trace"
 
-DATASET_ORDER = (
-    "electricity",
-    "london_smart_meters_wo_missing",
-    "san_francisco_traffic",
-    "solar_energy_10m",
-    "wind_farms_wo_missing",
-)
 SCHEDULE_ORDER = BASELINE_SCHEDULE_KEYS
 PAPER_FACING_TRACE_NAME = "velocity_variation_difficulty"
-
-
-def parse_csv(text: str) -> List[str]:
-    return [part.strip() for part in str(text).split(",") if part.strip()]
 
 
 def validate_time_grid(grid: Sequence[float], *, name: str = "time_grid") -> np.ndarray:
@@ -45,7 +34,7 @@ def validate_time_grid(grid: Sequence[float], *, name: str = "time_grid") -> np.
     return arr
 
 
-def normalize_trace(values: Sequence[float]) -> List[float]:
+def normalize_trace(values: Sequence[float]) -> list[float]:
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim != 1 or arr.size == 0:
         raise ValueError("Velocity-variation difficulty trace must be a non-empty one-dimensional sequence.")

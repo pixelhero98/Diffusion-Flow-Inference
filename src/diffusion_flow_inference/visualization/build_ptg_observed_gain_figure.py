@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import json
 import math
 import time
-import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,14 +23,10 @@ DEFAULT_POINTS_CSV = DEFAULT_RESULTS_DIR / "ptg_observed_gain_points.csv"
 DEFAULT_DIAGNOSTICS_JSON = DEFAULT_RESULTS_DIR / "ptg_diagnostics.json"
 DEFAULT_INTEGRATION_ROWS_CSV = DEFAULT_RESULTS_DIR / "ptg_integration_error_rows.csv"
 DEFAULT_INTEGRATION_SEED_STATS_CSV = DEFAULT_RESULTS_DIR / "ptg_integration_error_seed_stats.csv"
-DEFAULT_ZIP_PATH = DEFAULT_OUTPUT_ROOT / "20k.zip"
 DEFAULT_FIGURE_DIR = DEFAULT_OUTPUT_ROOT / "figures"
 DEFAULT_PNG = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.png"
 DEFAULT_PDF = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.pdf"
-DEFAULT_DIAGNOSTIC_PNG = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi_diagnostic.png"
-DEFAULT_DIAGNOSTIC_PDF = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi_diagnostic.pdf"
 
-RELATIVE_STATS_NAME = "20k/seed_stats/forecast_baseline_relative_seed_stats.csv"
 VELOCITY_VARIATION_SIGNAL_TRACE_KEY = "velocity_variation_difficulty_by_step"
 ORACLE_LOCAL_ERROR_TRACE_KEY = "oracle_local_error_by_step"
 LOCAL_DEFECT_TRACE_KEY = "validation_local_defect_trace"
@@ -343,8 +337,6 @@ def _runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
         "20000",
         "--num_eval_samples",
         "1",
-        "--calibration_trace_samples",
-        str(int(getattr(args, "calibration_trace_samples", DEFAULT_CALIBRATION_TRACE_SAMPLES))),
         "--eval_windows_val",
         str(int(getattr(args, "val_windows", DEFAULT_VALIDATION_WINDOWS))),
     ]
@@ -939,56 +931,6 @@ def load_integration_gain_rows(path: Path) -> Dict[Tuple[str, int, str, str], Di
     return selected
 
 
-def _load_zip_csv(zip_path: Path, member_name: str) -> List[Dict[str, str]]:
-    with zipfile.ZipFile(zip_path) as archive:
-        with archive.open(member_name) as handle:
-            return list(csv.DictReader(io.TextIOWrapper(handle, encoding="utf-8")))
-
-
-def observed_gain_from_relative_row(row: Mapping[str, str]) -> Dict[str, float]:
-    gain_crps = 100.0 * (1.0 - float(row["relative_crps_vs_uniform_mean"]))
-    gain_mase = 100.0 * (1.0 - float(row["relative_mase_vs_uniform_mean"]))
-    return {
-        "observed_gain_rcrps_percent": float(gain_crps),
-        "observed_gain_rmase_percent": float(gain_mase),
-        "observed_gain_avg_percent": float(0.5 * (gain_crps + gain_mase)),
-    }
-
-
-def load_observed_gain_rows(zip_path: Path) -> Dict[Tuple[str, int, str, str], Dict[str, Any]]:
-    rows = _load_zip_csv(Path(zip_path), RELATIVE_STATS_NAME)
-    selected: Dict[Tuple[str, int, str, str], Dict[str, Any]] = {}
-    for row in rows:
-        dataset = str(row["dataset"])
-        solver_key = str(row["solver_key"])
-        schedule_key = str(row["schedule_key"])
-        target_nfe = int(row["target_nfe"])
-        if dataset not in DATASET_ORDER or solver_key not in SOLVER_ORDER:
-            continue
-        if target_nfe not in TARGET_NFES or schedule_key not in TRANSFER_SCHEDULES:
-            continue
-        key = (dataset, target_nfe, solver_key, schedule_key)
-        if key in selected:
-            raise ValueError(f"Duplicate observed gain row for {key}.")
-        gains = observed_gain_from_relative_row(row)
-        selected[key] = {
-            "dataset": dataset,
-            "target_nfe": int(target_nfe),
-            "solver_key": solver_key,
-            "schedule_key": schedule_key,
-            "relative_crps_vs_uniform_mean": float(row["relative_crps_vs_uniform_mean"]),
-            "relative_mase_vs_uniform_mean": float(row["relative_mase_vs_uniform_mean"]),
-            "relative_crps_vs_uniform_std": float(row["relative_crps_vs_uniform_std"]),
-            "relative_mase_vs_uniform_std": float(row["relative_mase_vs_uniform_std"]),
-            "n_seeds": int(row["n_seeds"]),
-            **gains,
-        }
-    expected = len(DATASET_ORDER) * len(SOLVER_ORDER) * len(TARGET_NFES) * len(TRANSFER_SCHEDULES)
-    if len(selected) != expected:
-        raise ValueError(f"Expected {expected} selected observed rows, got {len(selected)}.")
-    return selected
-
-
 def validate_input_payload(payload: Mapping[str, Any]) -> None:
     cells = list(payload.get("cells", []))
     expected = len(payload.get("datasets", [])) * len(payload.get("solvers", [])) * len(payload.get("target_nfes", []))
@@ -1220,10 +1162,6 @@ def summarize_ptg_points(points: Sequence[Mapping[str, Any]], *, main_ptg_key: s
         "observed_y_key": "observed_integration_gain_percent",
         "variants": variants,
     }
-
-
-def diagnostic_figure_path(path: Path) -> Path:
-    return path.with_name(f"{path.stem}_diagnostic{path.suffix}")
 
 
 def build_figure(points: Sequence[Mapping[str, Any]], *, x_key: str = DEFAULT_MAIN_PTG_KEY):
