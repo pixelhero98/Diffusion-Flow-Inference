@@ -72,6 +72,27 @@ LEGACY_BASELINE_MODEL_CONFIG_KEYS = {
     "gan_noise_dim",
     "cgan_recon_weight",
 }
+LEGACY_SAMPLE_CONFIG_KEYS = {
+    "adaptive_beta",
+    "adaptive_tau",
+    "adaptive_kappa",
+    "adaptive_gamma_max",
+    "adaptive_cooldown_steps",
+    "adaptive_noise_mode",
+    "adaptive_trigger_mode",
+    "adaptive_disable_noise_frac",
+    "refine_beta",
+    "refine_trigger_mode",
+    "refine_threshold_z",
+    "refine_threshold_raw",
+    "refine_step_mu",
+    "refine_step_sigma",
+    "refine_step_threshold",
+    "refine_selected_steps",
+    "refine_fixed_last_k",
+    "refine_sigma_eps",
+    "refine_disallow_final_step",
+}
 
 DEFAULT_FORECAST_DATASETS = tuple(CANONICAL_FORECAST_PAPER_DATASETS)
 SUPPORTED_FORECAST_DATASETS = tuple(CANONICAL_FORECAST_PAPER_DATASETS)
@@ -259,6 +280,10 @@ def _safe_json(path: Path) -> Optional[Dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _resolve_checkpoint_path(path: str | Path) -> Path:
+    return resolve_project_path(str(path))
+
+
 def _missing_shared_checkpoint_paths(
     *,
     shared_backbone_root: Path,
@@ -288,14 +313,15 @@ def validate_execution_preflight(cli_args: argparse.Namespace) -> None:
     conditional_generation_datasets = parse_conditional_generation_datasets(
         str(cli_args.conditional_generation_datasets)
     )
-    shared_backbone_root = Path(str(cli_args.shared_backbone_root)).resolve()
+    shared_backbone_root = resolve_project_path(str(cli_args.shared_backbone_root))
     errors: List[str] = []
     manifest_payload = _load_ready_backbone_manifest(cli_args)
     if manifest_payload is not None:
         missing_artifacts: List[str] = []
+        missing_manifest_checkpoints: List[Path] = []
         for dataset in forecast_datasets:
             try:
-                find_backbone_artifact(
+                artifact = find_backbone_artifact(
                     manifest_payload,
                     backbone_name=BACKBONE_NAME_OTFLOW,
                     benchmark_family=FORECAST_FAMILY,
@@ -303,11 +329,14 @@ def validate_execution_preflight(cli_args: argparse.Namespace) -> None:
                     train_steps=int(getattr(cli_args, "otflow_train_steps", 20000)),
                     status="ready",
                 )
+                ckpt_path = _resolve_checkpoint_path(str(artifact["checkpoint_path"]))
+                if not ckpt_path.exists():
+                    missing_manifest_checkpoints.append(ckpt_path)
             except KeyError:
                 missing_artifacts.append(f"{FORECAST_FAMILY}:{dataset}")
         for dataset in conditional_generation_datasets:
             try:
-                find_backbone_artifact(
+                artifact = find_backbone_artifact(
                     manifest_payload,
                     backbone_name=BACKBONE_NAME_OTFLOW,
                     benchmark_family=CONDITIONAL_GENERATION_FAMILY,
@@ -315,12 +344,21 @@ def validate_execution_preflight(cli_args: argparse.Namespace) -> None:
                     train_steps=int(getattr(cli_args, "otflow_train_steps", 20000)),
                     status="ready",
                 )
+                ckpt_path = _resolve_checkpoint_path(str(artifact["checkpoint_path"]))
+                if not ckpt_path.exists():
+                    missing_manifest_checkpoints.append(ckpt_path)
             except KeyError:
                 missing_artifacts.append(f"{CONDITIONAL_GENERATION_FAMILY}:{dataset}")
         if missing_artifacts:
             errors.append(
                 "Backbone manifest is missing ready OTFlow checkpoints for the selected datasets and train_steps="
                 f"{int(getattr(cli_args, 'otflow_train_steps', 20000))}: {', '.join(missing_artifacts)}"
+            )
+        if missing_manifest_checkpoints:
+            missing_lines = ", ".join(str(path) for path in missing_manifest_checkpoints)
+            errors.append(
+                "Backbone manifest contains ready OTFlow artifacts whose checkpoint files are missing: "
+                f"{missing_lines}"
             )
     else:
         missing_checkpoints = _missing_shared_checkpoint_paths(
@@ -527,6 +565,10 @@ def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow
             checkpoint_values = {
                 key: value for key, value in checkpoint_values.items() if key not in LEGACY_BASELINE_MODEL_CONFIG_KEYS
             }
+        if section_name == "sample":
+            checkpoint_values = {
+                key: value for key, value in checkpoint_values.items() if key not in LEGACY_SAMPLE_CONFIG_KEYS
+            }
         section_values.update(checkpoint_values)
         if section_name == "train":
             section_values["device"] = device
@@ -724,7 +766,7 @@ def load_forecast_checkpoint_splits(
     expected_train_steps = int(getattr(cli_args, "otflow_train_steps", 20000))
     manifest_artifact = _resolved_manifest_artifact(cli_args, benchmark_family=FORECAST_FAMILY, dataset_key=str(dataset))
     if manifest_artifact is not None:
-        ckpt_path = Path(str(manifest_artifact["checkpoint_path"])).resolve()
+        ckpt_path = _resolve_checkpoint_path(str(manifest_artifact["checkpoint_path"]))
         checkpoint_id = str(manifest_artifact["checkpoint_id"])
         resolved_train_steps = int(manifest_artifact["train_steps"])
         resolved_budget_label = str(manifest_artifact["train_budget_label"])
@@ -802,7 +844,7 @@ def load_conditional_generation_checkpoint_splits(
         dataset_key=str(dataset),
     )
     if manifest_artifact is not None:
-        ckpt_path = Path(str(manifest_artifact["checkpoint_path"])).resolve()
+        ckpt_path = _resolve_checkpoint_path(str(manifest_artifact["checkpoint_path"]))
         checkpoint_id = str(manifest_artifact["checkpoint_id"])
         resolved_train_steps = int(manifest_artifact["train_steps"])
         resolved_budget_label = str(manifest_artifact["train_budget_label"])

@@ -421,7 +421,6 @@ def run_fixed_schedule_variant(
         "eval_seconds": eval_seconds,
         "mean_field_evals_per_step": float(diag["mean_field_evals_per_step"]),
         "mean_total_field_evals_per_rollout": float(diag["mean_total_field_evals_per_rollout"]),
-        "trigger_rate": float(diag["trigger_rate"]),
         "diag": diag,
         "evaluation_protocol": {
             "chosen_t0s": [int(t0) for t0 in result["meta"]["chosen_t0s"]],

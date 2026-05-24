@@ -484,8 +484,8 @@ def _scheduler_cases_for_datasets(cli_args: argparse.Namespace, datasets: Iterab
 
 
 def _run_forecast_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[str, Any], split_phase: str, seeds: Sequence[int], scheduler_cases_by_dataset: Mapping[str, Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
-    dataset_root = Path(str(cli_args.dataset_root)).resolve()
-    shared_backbone_root = Path(str(cli_args.shared_backbone_root)).resolve()
+    dataset_root = resolve_project_path(str(cli_args.dataset_root))
+    shared_backbone_root = resolve_project_path(str(cli_args.shared_backbone_root))
     device = torch.device(str(cli_args.device))
     dataset_cache: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
@@ -543,7 +543,7 @@ def _run_forecast_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[s
 
 
 def _run_conditional_generation_phase(cli_args: argparse.Namespace, *, row_recorder: Mapping[str, Any], split_phase: str, seeds: Sequence[int], scheduler_cases_by_dataset: Mapping[str, Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
-    shared_backbone_root = Path(str(cli_args.shared_backbone_root)).resolve()
+    shared_backbone_root = resolve_project_path(str(cli_args.shared_backbone_root))
     device = torch.device(str(cli_args.device))
     dataset_cache: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
@@ -753,7 +753,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
 
 def run_diffusion_flow_time_reparameterization(cli_args: argparse.Namespace) -> Dict[str, Any]:
-    out_root = Path(str(cli_args.out_root)).resolve()
+    out_root = resolve_project_path(str(cli_args.out_root))
     out_root.mkdir(parents=True, exist_ok=True)
     prep_payload = _prep_summary(cli_args)
     if bool(getattr(cli_args, "diagnose_locked_forecast_only", False)):

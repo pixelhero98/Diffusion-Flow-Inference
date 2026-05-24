@@ -198,32 +198,11 @@ class OTFlow(RectifiedFlow):
             "dopri5_adaptive",
             "rk45",
             "rk45_adaptive",
-            "euler_adaptive",
             "heun",
             "midpoint_rk2",
-            "euler_refine_half",
-            "euler_refine_heun",
         }:
             raise ValueError(f"Unknown sample solver={solver_name}")
         return solver_name
-
-    def _adaptive_sampler_settings(self) -> Dict[str, Any]:
-        noise_mode = str(getattr(self.cfg.sample, "adaptive_noise_mode", "orthogonal")).lower().strip()
-        if noise_mode not in {"orthogonal", "isotropic", "none"}:
-            raise ValueError(f"Unknown adaptive_noise_mode={noise_mode}")
-        trigger_mode = str(getattr(self.cfg.sample, "adaptive_trigger_mode", "adaptive")).lower().strip()
-        if trigger_mode not in {"adaptive", "always", "none"}:
-            raise ValueError(f"Unknown adaptive_trigger_mode={trigger_mode}")
-        return {
-            "beta": float(getattr(self.cfg.sample, "adaptive_beta", 0.9)),
-            "tau": float(getattr(self.cfg.sample, "adaptive_tau", 0.15)),
-            "kappa": float(getattr(self.cfg.sample, "adaptive_kappa", 12.0)),
-            "gamma_max": float(getattr(self.cfg.sample, "adaptive_gamma_max", 0.05)),
-            "cooldown_steps": int(getattr(self.cfg.sample, "adaptive_cooldown_steps", 0)),
-            "noise_mode": noise_mode,
-            "trigger_mode": trigger_mode,
-            "disable_noise_frac": float(getattr(self.cfg.sample, "adaptive_disable_noise_frac", 0.1)),
-        }
 
     def _adaptive_rk_settings(self) -> Dict[str, Any]:
         rtol = float(getattr(self.cfg.sample, "adaptive_rtol", 1e-3))
@@ -251,32 +230,6 @@ class OTFlow(RectifiedFlow):
             "max_factor": 5.0,
         }
 
-    def _refine_sampler_settings(self) -> Dict[str, Any]:
-        step_mu = tuple(float(x) for x in getattr(self.cfg.sample, "refine_step_mu", ()) or ())
-        step_sigma = tuple(float(x) for x in getattr(self.cfg.sample, "refine_step_sigma", ()) or ())
-        step_threshold = tuple(float(x) for x in getattr(self.cfg.sample, "refine_step_threshold", ()) or ())
-        selected_steps = tuple(int(x) for x in getattr(self.cfg.sample, "refine_selected_steps", ()) or ())
-        return {
-            "beta": float(getattr(self.cfg.sample, "refine_beta", 0.9)),
-            "trigger_mode": str(getattr(self.cfg.sample, "refine_trigger_mode", "zscore")),
-            "threshold_z": float(getattr(self.cfg.sample, "refine_threshold_z", 1.5)),
-            "threshold_raw": float(getattr(self.cfg.sample, "refine_threshold_raw", 0.0)),
-            "step_mu": step_mu,
-            "step_sigma": step_sigma,
-            "step_threshold": step_threshold,
-            "selected_steps": selected_steps,
-            "fixed_last_k": int(getattr(self.cfg.sample, "refine_fixed_last_k", 0)),
-            "sigma_eps": float(getattr(self.cfg.sample, "refine_sigma_eps", 1e-6)),
-            "disallow_final_step": bool(getattr(self.cfg.sample, "refine_disallow_final_step", True)),
-        }
-
-    @staticmethod
-    def _step_stat_value(values: Tuple[float, ...], step_idx: int, default: float) -> float:
-        if len(values) == 0:
-            return float(default)
-        clamped_idx = min(max(int(step_idx), 0), len(values) - 1)
-        return float(values[clamped_idx])
-
     def _resolved_time_grid(self, n_steps: int) -> Tuple[float, ...]:
         raw_grid = tuple(float(x) for x in getattr(self.cfg.sample, "time_grid", ()) or ())
         if len(raw_grid) == 0:
@@ -291,83 +244,6 @@ class OTFlow(RectifiedFlow):
             if float(right) <= float(left):
                 raise ValueError("sample.time_grid must be strictly increasing.")
         return raw_grid
-
-    def _normalized_disagreement(
-        self,
-        disagreement: torch.Tensor,
-        *,
-        step_idx: int,
-        refine_cfg: Mapping[str, Any],
-    ) -> torch.Tensor:
-        mu = self._step_stat_value(tuple(refine_cfg["step_mu"]), int(step_idx), 0.0)
-        sigma = self._step_stat_value(tuple(refine_cfg["step_sigma"]), int(step_idx), 1.0)
-        sigma = max(float(sigma), float(refine_cfg["sigma_eps"]))
-        return (disagreement - disagreement.new_tensor(mu)) / disagreement.new_tensor(sigma)
-
-    def _refine_trigger_state(
-        self,
-        disagreement: torch.Tensor,
-        normalized_disagreement: torch.Tensor,
-        *,
-        step_idx: int,
-        n_steps: int,
-        refine_cfg: Mapping[str, Any],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        disallow_final = bool(refine_cfg["disallow_final_step"]) and int(step_idx) == (int(n_steps) - 1)
-        trigger_mode = str(refine_cfg.get("trigger_mode", "zscore"))
-        dtype = disagreement.dtype
-        if trigger_mode == "selected_steps":
-            if disallow_final:
-                is_selected = False
-            else:
-                is_selected = int(step_idx) in {int(x) for x in tuple(refine_cfg.get("selected_steps", ()))}
-            trigger_eligible = torch.full_like(disagreement, bool(is_selected), dtype=torch.bool)
-            fired = trigger_eligible.clone()
-            trigger_strength = fired.to(dtype=dtype)
-            return trigger_eligible, fired, trigger_strength
-        if trigger_mode == "fixed_last_k":
-            fixed_last_k = max(int(refine_cfg.get("fixed_last_k", 0)), 0)
-            if disallow_final or fixed_last_k <= 0:
-                trigger_eligible = torch.zeros_like(disagreement, dtype=torch.bool)
-            else:
-                first_actionable = max(0, int(n_steps) - 1 - fixed_last_k)
-                is_selected = first_actionable <= int(step_idx) < (int(n_steps) - 1)
-                trigger_eligible = torch.full_like(disagreement, bool(is_selected), dtype=torch.bool)
-            fired = trigger_eligible.clone()
-            trigger_strength = fired.to(dtype=dtype)
-            return trigger_eligible, fired, trigger_strength
-
-        trigger_eligible = torch.full_like(disagreement, not disallow_final, dtype=torch.bool)
-        if trigger_mode == "raw_step":
-            threshold = self._step_stat_value(tuple(refine_cfg.get("step_threshold", ())), int(step_idx), float(refine_cfg.get("threshold_raw", 0.0)))
-            fired = trigger_eligible & (disagreement > float(threshold))
-        else:
-            fired = trigger_eligible & (normalized_disagreement > float(refine_cfg["threshold_z"]))
-        trigger_strength = torch.where(fired, torch.ones_like(disagreement, dtype=dtype), torch.zeros_like(disagreement, dtype=dtype))
-        return trigger_eligible, fired, trigger_strength
-
-    @staticmethod
-    def _adaptive_time_gate(t_cur: float, disable_noise_frac: float) -> float:
-        t_val = float(t_cur)
-        if not (disable_noise_frac < t_val < 1.0 - disable_noise_frac):
-            return 0.0
-        return float(4.0 * t_val * (1.0 - t_val))
-
-    @staticmethod
-    def _project_noise_orthogonal(
-        noise: torch.Tensor,
-        velocity: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size = velocity.shape[0]
-        noise_flat = noise.reshape(batch_size, -1)
-        vel_flat = velocity.reshape(batch_size, -1)
-        denom = vel_flat.square().sum(dim=-1, keepdim=True)
-        valid = denom.squeeze(-1) >= 1e-8
-        safe_denom = torch.clamp(denom, min=1e-8)
-        proj = (noise_flat * vel_flat).sum(dim=-1, keepdim=True) / safe_denom
-        orth_flat = noise_flat - proj * vel_flat
-        orth_flat = torch.where(valid[:, None], orth_flat, torch.zeros_like(orth_flat))
-        return orth_flat.view_as(noise), valid
 
     def _top_of_book_feature_weights(
         self,
@@ -591,20 +467,17 @@ class OTFlow(RectifiedFlow):
         default_cfg_scale = float(self.cfg.sample.cfg_scale)
         guidance = float(default_cfg_scale if cfg_scale is None else cfg_scale)
         solver_name = self._resolve_solver_name(solver)
-        adaptive_cfg = self._adaptive_sampler_settings()
-        refine_cfg = self._refine_sampler_settings()
         time_grid = self._resolved_time_grid(n_steps)
         prev_u: Optional[torch.Tensor] = None
         prev_t: Optional[float] = None
         ema_v: Optional[torch.Tensor] = None
         ema_v_sq: Optional[torch.Tensor] = None
         ema_u: Optional[torch.Tensor] = None
-        cooldown = torch.zeros(batch_size, device=hist.device, dtype=torch.long)
         top_book_weights = self._top_of_book_feature_weights(device=hist.device, dtype=x.dtype)[None, :]
+        ema_beta = 0.9
 
         if record_trace:
             trace_disagreement = []
-            trace_normalized_disagreement = []
             trace_velocity_norm = []
             trace_ema_velocity_norm = []
             trace_residual_norm = []
@@ -616,27 +489,17 @@ class OTFlow(RectifiedFlow):
             trace_top_book_disagreement = []
             trace_top_book_residual_norm = []
             trace_top_book_hybrid_signal = []
-            trace_gamma = []
-            trace_trigger = []
-            trace_fired = []
-            trace_noise_norm = []
-            trace_noise_inner = []
             trace_oracle_error = []
             trace_field_evals = []
             trace_time = []
-            trace_gate = []
-            trace_trigger_eligible = []
         else:
-            trace_disagreement = trace_normalized_disagreement = trace_velocity_norm = None
+            trace_disagreement = trace_velocity_norm = None
             trace_ema_velocity_norm = None
             trace_residual_norm = trace_hybrid_signal = trace_u_disagreement = None
             trace_u_residual_norm = trace_u_hybrid_signal = trace_variance_scaled_signal = None
             trace_top_book_disagreement = trace_top_book_residual_norm = trace_top_book_hybrid_signal = None
-            trace_gamma = None
-            trace_trigger = trace_fired = trace_noise_norm = None
-            trace_noise_inner = trace_oracle_error = trace_field_evals = None
-            trace_time = trace_gate = None
-            trace_trigger_eligible = None
+            trace_oracle_error = trace_field_evals = None
+            trace_time = None
 
         def _guided_field_at(x_state: torch.Tensor, t_scalar: float) -> torch.Tensor:
             t_tensor = torch.full((batch_size, 1), float(t_scalar), device=hist.device, dtype=x.dtype)
@@ -657,6 +520,11 @@ class OTFlow(RectifiedFlow):
             trial_errors: List[float] = []
             trial_accepted: List[bool] = []
             trial_evals: List[int] = []
+            accepted_time_grid: List[float] = [0.0]
+            accepted_start_times: List[float] = []
+            accepted_dts: List[float] = []
+            accepted_errors: List[float] = []
+            accepted_evals: List[int] = []
             step_fn = self._rk45_embedded_step if solver_name == "rk45_adaptive" else self._dopri5_embedded_step
             first_eval: Optional[torch.Tensor] = None
 
@@ -682,8 +550,13 @@ class OTFlow(RectifiedFlow):
                 trial_evals.append(int(evals))
                 factor = self._adaptive_step_factor(float(error_norm), settings=rk_cfg)
                 if accepted:
+                    accepted_start_times.append(float(t_cur))
+                    accepted_dts.append(float(dt))
+                    accepted_errors.append(float(error_norm))
+                    accepted_evals.append(int(evals))
                     x = x_high
                     t_cur = min(1.0, float(t_cur) + float(dt))
+                    accepted_time_grid.append(float(t_cur))
                     accepted_steps += 1
                     first_eval = None
                     dt = min(1.0 - float(t_cur), float(dt) * factor) if t_cur < 1.0 else float(dt)
@@ -703,7 +576,12 @@ class OTFlow(RectifiedFlow):
                     trial_errors.append(float("nan"))
                     trial_accepted.append(True)
                     trial_evals.append(int(evals))
+                    accepted_start_times.append(float(t_cur))
+                    accepted_dts.append(float(remaining_dt))
+                    accepted_errors.append(float("nan"))
+                    accepted_evals.append(int(evals))
                     t_cur = 1.0
+                    accepted_time_grid.append(float(t_cur))
                     break
 
             self._last_sample_stats = {
@@ -723,19 +601,26 @@ class OTFlow(RectifiedFlow):
             }
             if not record_trace:
                 return x, None
-            evals_t = torch.tensor(trial_evals, dtype=x.dtype).repeat(batch_size, 1)
+            evals_t = torch.tensor(accepted_evals, dtype=x.dtype).repeat(batch_size, 1)
+            trial_evals_t = torch.tensor(trial_evals, dtype=x.dtype).repeat(batch_size, 1)
             trace = {
                 "solver": solver_name,
-                "steps": int(len(trial_evals)),
-                "step_index": torch.arange(len(trial_evals), dtype=torch.long),
-                "time": torch.tensor(trial_times, dtype=x.dtype),
-                "time_grid": torch.tensor([0.0, *[min(1.0, a + b) for a, b in zip(trial_times, trial_dts)]], dtype=x.dtype),
-                "dt": torch.tensor(trial_dts, dtype=x.dtype),
-                "adaptive_error_norm": torch.tensor(trial_errors, dtype=x.dtype),
-                "adaptive_accepted": torch.tensor(trial_accepted, dtype=torch.bool),
+                "steps": int(len(accepted_evals)),
+                "step_index": torch.arange(len(accepted_evals), dtype=torch.long),
+                "time": torch.tensor(accepted_start_times, dtype=x.dtype),
+                "time_grid": torch.tensor(accepted_time_grid, dtype=x.dtype),
+                "dt": torch.tensor(accepted_dts, dtype=x.dtype),
+                "adaptive_error_norm": torch.tensor(accepted_errors, dtype=x.dtype),
+                "adaptive_accepted": torch.ones(len(accepted_evals), dtype=torch.bool),
                 "field_evals_by_step": evals_t,
                 "mean_field_evals_per_step": float(evals_t.mean().item()) if evals_t.numel() else 0.0,
                 "mean_total_field_evals_per_rollout": float(total_evals),
+                "trial_step_index": torch.arange(len(trial_evals), dtype=torch.long),
+                "trial_time": torch.tensor(trial_times, dtype=x.dtype),
+                "trial_dt": torch.tensor(trial_dts, dtype=x.dtype),
+                "trial_adaptive_error_norm": torch.tensor(trial_errors, dtype=x.dtype),
+                "trial_accepted": torch.tensor(trial_accepted, dtype=torch.bool),
+                "trial_field_evals_by_step": trial_evals_t,
                 "accepted_steps": int(accepted_steps),
                 "rejected_steps": int(rejected_steps),
                 "hit_max_nfe": bool(hit_max_nfe),
@@ -788,17 +673,9 @@ class OTFlow(RectifiedFlow):
             u_residual_flat = u_flat - ema_u
             u_residual_norm = torch.sqrt(u_residual_flat.square().sum(dim=-1) + 1e-12)
             u_hybrid_signal = u_residual_norm * u_disagreement
-            normalized_disagreement = self._normalized_disagreement(disagreement, step_idx=i, refine_cfg=refine_cfg)
 
-            gamma = torch.zeros(batch_size, device=hist.device, dtype=x.dtype)
-            trigger_strength = torch.zeros(batch_size, device=hist.device, dtype=x.dtype)
-            fired = torch.zeros(batch_size, device=hist.device, dtype=torch.bool)
-            noise_norm = torch.zeros(batch_size, device=hist.device, dtype=x.dtype)
-            noise_inner = torch.zeros(batch_size, device=hist.device, dtype=x.dtype)
             oracle_error = torch.zeros(batch_size, device=hist.device, dtype=x.dtype)
             field_evals = torch.ones(batch_size, device=hist.device, dtype=x.dtype)
-            trigger_eligible = torch.zeros(batch_size, device=hist.device, dtype=torch.bool)
-            gate_scalar = 0.0
 
             if oracle_local_error:
                 oracle_error = self._oracle_local_error_proxy(
@@ -811,40 +688,7 @@ class OTFlow(RectifiedFlow):
                     t_cur=t_cur,
                 )
 
-            if solver_name == "euler_adaptive":
-                gate_scalar = self._adaptive_time_gate(t_cur, adaptive_cfg["disable_noise_frac"])
-                gate = torch.full((batch_size,), gate_scalar, device=hist.device, dtype=x.dtype)
-                trigger_eligible = gate > 0.0
-                if adaptive_cfg["trigger_mode"] == "always":
-                    trigger_strength = torch.ones(batch_size, device=hist.device, dtype=x.dtype)
-                    fired = trigger_eligible
-                else:
-                    trigger_strength = torch.sigmoid(adaptive_cfg["kappa"] * (disagreement - adaptive_cfg["tau"]))
-                    fired = disagreement > adaptive_cfg["tau"]
-                    if adaptive_cfg["cooldown_steps"] > 0:
-                        trigger_strength = torch.maximum(trigger_strength, (cooldown > 0).to(dtype=x.dtype))
-                        fired = fired | (cooldown > 0)
-                gamma = adaptive_cfg["gamma_max"] * trigger_strength * gate
-
-                if float(adaptive_cfg["gamma_max"]) > 0.0 and torch.any(gamma > 0):
-                    noise = torch.randn_like(x)
-                    if adaptive_cfg["noise_mode"] == "orthogonal":
-                        noise, valid = self._project_noise_orthogonal(noise, v)
-                        gamma = torch.where(valid, gamma, torch.zeros_like(gamma))
-                    noise = noise * gamma[:, None]
-                    noise_norm = torch.sqrt(noise.reshape(batch_size, -1).square().sum(dim=-1))
-                    noise_inner = (noise.reshape(batch_size, -1) * v_flat).sum(dim=-1)
-                    x = x + dt * v + math.sqrt(abs(dt)) * noise
-                else:
-                    x = x + dt * v
-
-                if adaptive_cfg["trigger_mode"] == "adaptive" and adaptive_cfg["cooldown_steps"] > 0:
-                    cooldown = torch.where(
-                        disagreement > adaptive_cfg["tau"],
-                        torch.full_like(cooldown, adaptive_cfg["cooldown_steps"]),
-                        torch.clamp(cooldown - 1, min=0),
-                    )
-            elif solver_name == "heun":
+            if solver_name == "heun":
                 x_pred = x + dt * v
                 t_next_tensor = torch.full((batch_size, 1), t_next, device=hist.device)
                 v_next = self._guided_field(x_pred, t_next_tensor, hist, cond=cond, guidance=guidance)
@@ -948,30 +792,6 @@ class OTFlow(RectifiedFlow):
                 field_evals = torch.full_like(field_evals, 6.0)
             elif solver_name == "euler":
                 x = x + dt * v
-            elif solver_name in {"euler_refine_half", "euler_refine_heun"}:
-                trigger_eligible, fired, trigger_strength = self._refine_trigger_state(
-                    disagreement,
-                    normalized_disagreement,
-                    step_idx=i,
-                    n_steps=n_steps,
-                    refine_cfg=refine_cfg,
-                )
-                x_euler = x + dt * v
-                if torch.any(fired):
-                    if solver_name == "euler_refine_half":
-                        x_mid = x + 0.5 * dt * v
-                        t_mid_tensor = torch.full((batch_size, 1), t_cur + 0.5 * dt, device=hist.device)
-                        v_mid = self._guided_field(x_mid, t_mid_tensor, hist, cond=cond, guidance=guidance)
-                        x_refined = x_mid + 0.5 * dt * v_mid
-                    else:
-                        x_pred = x + dt * v
-                        t_next_tensor = torch.full((batch_size, 1), t_next, device=hist.device)
-                        v_next = self._guided_field(x_pred, t_next_tensor, hist, cond=cond, guidance=guidance)
-                        x_refined = x + dt * 0.5 * (v + v_next)
-                    x = torch.where(fired[:, None], x_refined, x_euler)
-                    field_evals = field_evals + fired.to(dtype=x.dtype)
-                else:
-                    x = x_euler
             else:
                 tail_next = max(0.0, 1.0 - t_next)
                 u = x + tail_cur * v
@@ -994,14 +814,12 @@ class OTFlow(RectifiedFlow):
                 prev_u = u
                 prev_t = t_cur
 
-            ema_beta = adaptive_cfg["beta"] if solver_name == "euler_adaptive" else refine_cfg["beta"]
             ema_v = ema_beta * ema_v + (1.0 - ema_beta) * v_flat.detach()
             ema_v_sq = ema_beta * ema_v_sq + (1.0 - ema_beta) * v_flat.detach().square()
             ema_u = ema_beta * ema_u + (1.0 - ema_beta) * u_flat.detach()
 
             if record_trace:
                 trace_disagreement.append(disagreement.detach().cpu())
-                trace_normalized_disagreement.append(normalized_disagreement.detach().cpu())
                 trace_velocity_norm.append(vel_norm.detach().cpu())
                 trace_ema_velocity_norm.append(ema_vel_norm.detach().cpu())
                 trace_residual_norm.append(residual_norm.detach().cpu())
@@ -1013,21 +831,13 @@ class OTFlow(RectifiedFlow):
                 trace_top_book_disagreement.append(top_book_disagreement.detach().cpu())
                 trace_top_book_residual_norm.append(top_book_residual_norm.detach().cpu())
                 trace_top_book_hybrid_signal.append(top_book_hybrid_signal.detach().cpu())
-                trace_gamma.append(gamma.detach().cpu())
-                trace_trigger.append(trigger_strength.detach().cpu())
-                trace_fired.append(fired.detach().cpu())
-                trace_noise_norm.append(noise_norm.detach().cpu())
-                trace_noise_inner.append(noise_inner.detach().cpu())
                 trace_oracle_error.append(oracle_error.detach().cpu())
                 trace_field_evals.append(field_evals.detach().cpu())
                 trace_time.append(float(t_cur))
-                trace_gate.append(float(gate_scalar))
-                trace_trigger_eligible.append(trigger_eligible.detach().cpu())
 
         trace: Optional[Dict[str, Any]] = None
         if record_trace:
             disagreement_t = torch.stack(trace_disagreement, dim=1)
-            normalized_disagreement_t = torch.stack(trace_normalized_disagreement, dim=1)
             velocity_norm_t = torch.stack(trace_velocity_norm, dim=1)
             ema_velocity_norm_t = torch.stack(trace_ema_velocity_norm, dim=1)
             residual_norm_t = torch.stack(trace_residual_norm, dim=1)
@@ -1039,30 +849,15 @@ class OTFlow(RectifiedFlow):
             top_book_disagreement_t = torch.stack(trace_top_book_disagreement, dim=1)
             top_book_residual_norm_t = torch.stack(trace_top_book_residual_norm, dim=1)
             top_book_hybrid_signal_t = torch.stack(trace_top_book_hybrid_signal, dim=1)
-            gamma_t = torch.stack(trace_gamma, dim=1)
-            trigger_t = torch.stack(trace_trigger, dim=1)
-            fired_t = torch.stack(trace_fired, dim=1)
-            noise_norm_t = torch.stack(trace_noise_norm, dim=1)
-            noise_inner_t = torch.stack(trace_noise_inner, dim=1)
             oracle_error_t = torch.stack(trace_oracle_error, dim=1)
             field_evals_t = torch.stack(trace_field_evals, dim=1)
-            eligible_t = torch.stack(trace_trigger_eligible, dim=1)
-            gate_t = torch.tensor(trace_gate, dtype=gamma_t.dtype)
-            if solver_name == "euler_adaptive":
-                active = (gate_t[None, :] > 0.0).expand_as(fired_t)
-            else:
-                active = eligible_t
-            fire_rate = float(fired_t[active].float().mean().item()) if torch.any(active) else 0.0
             trace = {
                 "solver": solver_name,
                 "steps": int(n_steps),
                 "step_index": torch.arange(n_steps, dtype=torch.long),
-                "time": torch.tensor(trace_time, dtype=gamma_t.dtype),
-                "time_grid": torch.tensor(time_grid, dtype=gamma_t.dtype),
-                "time_gate": gate_t,
-                "trigger_eligible": eligible_t,
+                "time": torch.tensor(trace_time, dtype=x.dtype),
+                "time_grid": torch.tensor(time_grid, dtype=x.dtype),
                 "disagreement": disagreement_t,
-                "normalized_disagreement": normalized_disagreement_t,
                 "velocity_norm": velocity_norm_t,
                 "ema_velocity_norm": ema_velocity_norm_t,
                 "residual_norm": residual_norm_t,
@@ -1075,28 +870,9 @@ class OTFlow(RectifiedFlow):
                 "top_book_residual_norm": top_book_residual_norm_t,
                 "top_book_hybrid_signal": top_book_hybrid_signal_t,
                 "oracle_local_error": oracle_error_t,
-                "gamma": gamma_t,
-                "trigger_strength": trigger_t,
-                "fired": fired_t,
-                "triggered": fired_t,
-                "noise_norm": noise_norm_t,
-                "noise_velocity_inner": noise_inner_t,
                 "field_evals_by_step": field_evals_t,
-                "fire_rate_active": fire_rate,
-                "mean_gamma": float(gamma_t.mean().item()),
                 "mean_field_evals_per_step": float(field_evals_t.mean().item()),
                 "mean_total_field_evals_per_rollout": float(field_evals_t.sum(dim=1).mean().item()),
-                "tau": float(adaptive_cfg["tau"]),
-                "threshold_z": float(refine_cfg["threshold_z"]),
-                "noise_mode": adaptive_cfg["noise_mode"] if solver_name == "euler_adaptive" else "none",
-                "trigger_mode": (
-                    adaptive_cfg["trigger_mode"]
-                    if solver_name == "euler_adaptive"
-                    else refine_cfg["trigger_mode"]
-                    if solver_name in {"euler_refine_half", "euler_refine_heun"}
-                    else "none"
-                ),
-                "selected_steps": list(refine_cfg["selected_steps"]) if solver_name in {"euler_refine_half", "euler_refine_heun"} else [],
             }
         return x, trace
 

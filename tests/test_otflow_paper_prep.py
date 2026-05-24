@@ -15,6 +15,7 @@ from diffusion_flow_inference.schedule_transfer.otflow_paper_registry import (
     TRANSFER_SCHEDULE_KEYS,
     paper_registry_snapshot,
     paper_schedule_specs,
+    paper_solver_specs,
 )
 from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import NATIVE_INFO_GROWTH_TRACE_KEY, NATIVE_SIGNAL_TRACE_KEYS
 
@@ -33,6 +34,13 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
     def test_schedule_sets_are_exact(self) -> None:
         self.assertEqual(BASELINE_SCHEDULE_KEYS, ("uniform", "late_power_3", "flowts_power_sampling", "ays", "gits", "ots"))
         self.assertEqual(TRANSFER_SCHEDULE_KEYS, ("ays", "gits", "ots"))
+
+    def test_dpmpp2m_remains_public_deterministic_solver(self) -> None:
+        self.assertIn("dpmpp2m", runner.ALL_SOLVER_ORDER)
+        self.assertEqual(runner.SOLVER_RUNTIME_NAMES["dpmpp2m"], "dpmpp2m")
+        solver_specs = {spec.key: spec for spec in paper_solver_specs()}
+        self.assertEqual(solver_specs["dpmpp2m"].display_name, "DPM++2M")
+        self.assertEqual(runner.solver_macro_steps("dpmpp2m", 10), 10)
 
     def test_active_schedule_grids_have_endpoints(self) -> None:
         for key in BASELINE_SCHEDULE_KEYS:
@@ -266,6 +274,69 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                 ]
             )
             self.assertNotEqual(runner._protocol_config_fingerprint(args_a), runner._protocol_config_fingerprint(args_b))
+
+    def test_preflight_resolves_relative_shared_backbone_root_from_project_root(self) -> None:
+        with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as tmpdir:
+            root = Path(tmpdir)
+            rel_root = root.relative_to(PROJECT_ROOT).as_posix()
+            ckpt_path = root / "forecast" / "electricity" / "model.pt"
+            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            ckpt_path.write_bytes(b"checkpoint")
+            args = runner.build_argparser().parse_args(
+                [
+                    "--forecast_datasets",
+                    "electricity",
+                    "--conditional_generation_datasets",
+                    "",
+                    "--shared_backbone_root",
+                    rel_root,
+                    "--backbone_manifest",
+                    "",
+                    "--allow_execute",
+                ]
+            )
+
+            runner.validate_execution_preflight(args)
+
+    def test_preflight_rejects_stale_ready_manifest_checkpoint_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = Path(tmpdir) / "backbone_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "artifacts": [
+                            {
+                                "backbone_name": "otflow",
+                                "benchmark_family": "forecast_extrapolation",
+                                "dataset_key": "electricity",
+                                "train_steps": 20000,
+                                "train_budget_label": "20k",
+                                "checkpoint_id": "electricity_otflow_forecast_20k_seed0",
+                                "checkpoint_path": "outputs/missing_preflight_checkpoint/model.pt",
+                                "summary_path": "",
+                                "status": "ready",
+                                "seed": 0,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = runner.build_argparser().parse_args(
+                [
+                    "--forecast_datasets",
+                    "electricity",
+                    "--conditional_generation_datasets",
+                    "",
+                    "--backbone_manifest",
+                    str(manifest_path),
+                    "--allow_execute",
+                ]
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "checkpoint files are missing"):
+                runner.validate_execution_preflight(args)
 
     def test_protocol_hash_tracks_selected_seeds(self) -> None:
         manifest = PROJECT_ROOT / "outputs" / "backbone_matrix" / "backbone_manifest.json"
