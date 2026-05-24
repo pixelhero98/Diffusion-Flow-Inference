@@ -120,16 +120,21 @@ class PtgObservedGainFigureTests(unittest.TestCase):
         self.assertEqual({key[3] for key in rows}, set(ptg_fig.TRANSFER_SCHEDULES))
 
     def test_synthetic_points_are_exact_scope(self) -> None:
+        payload = ptg_fig.synthetic_payload()
+        self.assertEqual(payload["main_ptg_key"], "ptg_local_defect_eta005")
+        self.assertEqual(payload["paper_facing_trace_key"], "validation_local_defect_trace")
+        self.assertEqual(payload["auxiliary_trace_key"], "validation_velocity_variation_difficulty_trace")
+        self.assertEqual(payload["reference_macro_factor"], 4.0)
         with mock.patch.object(ptg_fig, "build_fixed_schedule_grid", side_effect=_lightweight_grid):
-            points = ptg_fig.build_points(ptg_fig.synthetic_payload(), ptg_fig.synthetic_observed_rows())
+            points = ptg_fig.build_points(payload, ptg_fig.synthetic_observed_rows())
         self.assertEqual(len(points), 180)
         self.assertEqual({point["schedule_key"] for point in points}, set(ptg_fig.TRANSFER_SCHEDULES))
         self.assertTrue(all("observed_integration_gain_percent" in point for point in points))
         for key in (
-            "ptg_info_growth_raw",
-            "ptg_info_growth_reversed",
             "ptg_local_defect_eta005",
             "ptg_local_defect_reversed_eta005",
+            "ptg_velocity_variation_raw",
+            "ptg_velocity_variation_reversed",
         ):
             self.assertTrue(all(key in point for point in points))
 
@@ -176,10 +181,11 @@ class PtgObservedGainFigureTests(unittest.TestCase):
         with mock.patch.object(ptg_fig, "build_fixed_schedule_grid", side_effect=_lightweight_grid):
             points = ptg_fig.build_points(ptg_fig.synthetic_payload(), ptg_fig.synthetic_observed_rows())
         summary = ptg_fig.summarize_ptg_points(points)
-        self.assertEqual(summary["main_ptg_key"], "ptg_info_growth_raw")
+        self.assertEqual(summary["main_ptg_key"], "ptg_local_defect_eta005")
         self.assertEqual(summary["n_points"], 180)
         self.assertEqual(summary["observed_y_key"], "observed_integration_gain_percent")
-        self.assertIn("ptg_info_growth_raw", summary["variants"])
+        self.assertIn("ptg_local_defect_eta005", summary["variants"])
+        self.assertIn("ptg_velocity_variation_raw", summary["variants"])
 
     def test_integration_gain_loader_has_180_points_and_excludes_nontransferred(self) -> None:
         stats_rows = []

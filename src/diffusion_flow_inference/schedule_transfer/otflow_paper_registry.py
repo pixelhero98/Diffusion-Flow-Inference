@@ -16,7 +16,7 @@ MAIN_NFE_VALUES: Tuple[int, ...] = (10, 12, 16)
 APPENDIX_NFE_VALUES: Tuple[int, ...] = (6, 8, 20, 24)
 METHOD_KEY = "diffusion_flow_time_reparameterization"
 PAPER_METHOD_KEY = METHOD_KEY
-PAPER_MAIN_SIGNAL_FAMILY = "native_info_growth"
+PAPER_MAIN_SIGNAL_FAMILY = "local_defect"
 
 
 @dataclass(frozen=True)

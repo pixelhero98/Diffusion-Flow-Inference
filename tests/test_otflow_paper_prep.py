@@ -17,7 +17,10 @@ from diffusion_flow_inference.schedule_transfer.otflow_paper_registry import (
     paper_schedule_specs,
     paper_solver_specs,
 )
-from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import NATIVE_INFO_GROWTH_TRACE_KEY, NATIVE_SIGNAL_TRACE_KEYS
+from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
+    MODEL_SIGNAL_TRACE_KEYS,
+    VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,9 +108,9 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
         self.assertAlmostEqual(by_schedule["ays"]["relative_crps_gain_vs_uniform"], 0.25)
         self.assertAlmostEqual(by_schedule["uniform"]["relative_crps_gain_vs_uniform"], 0.0)
 
-    def test_native_hardness_trace_is_info_growth(self) -> None:
-        self.assertEqual(NATIVE_INFO_GROWTH_TRACE_KEY, "info_growth_hardness_by_step")
-        self.assertIn("info_growth_hardness_by_step", NATIVE_SIGNAL_TRACE_KEYS)
+    def test_signal_trace_includes_velocity_variation_difficulty(self) -> None:
+        self.assertEqual(VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY, "velocity_variation_difficulty_by_step")
+        self.assertIn("velocity_variation_difficulty_by_step", MODEL_SIGNAL_TRACE_KEYS)
 
     def test_runner_dry_run_writes_combined_summary(self) -> None:
         manifest = PROJECT_ROOT / "outputs" / "backbone_matrix" / "backbone_manifest.json"

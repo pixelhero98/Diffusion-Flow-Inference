@@ -33,17 +33,17 @@ DEFAULT_DIAGNOSTIC_PNG = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k
 DEFAULT_DIAGNOSTIC_PDF = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi_diagnostic.pdf"
 
 RELATIVE_STATS_NAME = "20k/seed_stats/forecast_baseline_relative_seed_stats.csv"
-NATIVE_TRACE_KEY = "info_growth_hardness_by_step"
+VELOCITY_VARIATION_SIGNAL_TRACE_KEY = "velocity_variation_difficulty_by_step"
 ORACLE_LOCAL_ERROR_TRACE_KEY = "oracle_local_error_by_step"
 LOCAL_DEFECT_TRACE_KEY = "validation_local_defect_trace"
-INFO_GROWTH_TRACE_KEY = "validation_info_growth_trace"
+VELOCITY_VARIATION_TRACE_KEY = "validation_velocity_variation_difficulty_trace"
 DEFAULT_DENSITY_FLOOR_ETA = 0.05
-DEFAULT_MAIN_PTG_KEY = "ptg_info_growth_raw"
+DEFAULT_MAIN_PTG_KEY = "ptg_local_defect_eta005"
 PTG_X_LABELS: Dict[str, str] = {
-    "ptg_info_growth_raw": "Info-growth PTG",
-    "ptg_info_growth_reversed": "Info-growth PTG, reversed time",
     "ptg_local_defect_eta005": "Local-defect PTG",
     "ptg_local_defect_reversed_eta005": "Local-defect PTG, reversed time",
+    "ptg_velocity_variation_raw": "Velocity-variation PTG",
+    "ptg_velocity_variation_reversed": "Velocity-variation PTG, reversed time",
 }
 
 DATASET_ORDER: Tuple[str, ...] = (
@@ -444,7 +444,7 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
                         )
                     )
                     per_seed: List[Dict[str, Any]] = []
-                    info_growth_traces: List[List[float]] = []
+                    velocity_variation_traces: List[List[float]] = []
                     oracle_traces: List[List[float]] = []
                     local_defect_traces: List[List[float]] = []
                     reference_time_grid: Optional[List[float]] = None
@@ -466,7 +466,7 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
                             seed=int(calibration_seed),
                             calibration_trace_samples=int(args.calibration_trace_samples),
                         )
-                        trace = [float(x) for x in calibration[NATIVE_TRACE_KEY]]
+                        trace = [float(x) for x in calibration[VELOCITY_VARIATION_SIGNAL_TRACE_KEY]]
                         oracle_trace = [float(x) for x in calibration[ORACLE_LOCAL_ERROR_TRACE_KEY]]
                         grid = [float(x) for x in calibration["reference_time_grid"]]
                         if reference_time_grid is None:
@@ -480,7 +480,7 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
                             grid,
                             solver_order_p=float(solver_p),
                         )
-                        info_growth_traces.append(trace)
+                        velocity_variation_traces.append(trace)
                         oracle_traces.append(oracle_trace)
                         local_defect_traces.append(local_defect_trace)
                         per_seed.append(
@@ -489,19 +489,22 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
                                 "validation_indices": val_indices,
                                 "validation_windows": int(len(val_indices)),
                                 "validation_trace": trace,
-                                "validation_info_growth_trace": trace,
+                                "validation_velocity_variation_difficulty_trace": trace,
                                 "validation_oracle_local_error_trace": oracle_trace,
                                 "validation_local_defect_trace": local_defect_trace,
-                                "info_growth_scale": float(calibration["info_growth_scale"]),
-                                "base_info_growth_scale": float(calibration["base_info_growth_scale"]),
+                                "velocity_variation_scale": float(calibration["velocity_variation_scale"]),
+                                "base_velocity_variation_scale": float(calibration["base_velocity_variation_scale"]),
                                 "signal_validation_spearman": calibration.get("signal_correlations_vs_oracle", {})
-                                .get(NATIVE_TRACE_KEY, {})
+                                .get(VELOCITY_VARIATION_SIGNAL_TRACE_KEY, {})
                                 .get("spearman"),
                             }
                         )
                     if reference_time_grid is None:
                         raise ValueError(f"No reference grid collected for {dataset}/{solver_key}/NFE={target_nfe}.")
-                    mean_info_growth = mean_trace(info_growth_traces, name=f"{dataset}_{solver_key}_{target_nfe}_info_growth")
+                    mean_velocity_variation = mean_trace(
+                        velocity_variation_traces,
+                        name=f"{dataset}_{solver_key}_{target_nfe}_velocity_variation_difficulty",
+                    )
                     mean_oracle = mean_trace(oracle_traces, name=f"{dataset}_{solver_key}_{target_nfe}_oracle")
                     mean_local_defect = mean_trace(
                         local_defect_traces,
@@ -524,7 +527,7 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
                             "reference_macro_steps": int(reference_macro_steps),
                             "reference_time_grid": reference_time_grid,
                             "validation_hardness_trace": mean_local_defect,
-                            "validation_info_growth_trace": mean_info_growth,
+                            "validation_velocity_variation_difficulty_trace": mean_velocity_variation,
                             "validation_oracle_local_error_trace": mean_oracle,
                             "validation_local_defect_trace": mean_local_defect,
                             "per_seed": per_seed,
@@ -549,7 +552,8 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
         "validation_windows": int(args.val_windows),
         "reference_macro_factor": float(args.reference_macro_factor),
         "calibration_trace_samples": int(args.calibration_trace_samples),
-        "signal_trace_key": NATIVE_TRACE_KEY,
+        "signal_trace_key": VELOCITY_VARIATION_SIGNAL_TRACE_KEY,
+        "auxiliary_trace_key": VELOCITY_VARIATION_TRACE_KEY,
         "paper_facing_trace_key": LOCAL_DEFECT_TRACE_KEY,
         "oracle_local_error_trace_key": ORACLE_LOCAL_ERROR_TRACE_KEY,
         "density_floor_eta": float(DEFAULT_DENSITY_FLOOR_ETA),
@@ -998,7 +1002,7 @@ def validate_input_payload(payload: Mapping[str, Any]) -> None:
         seen.add(key)
         reference_grid = validate_time_grid(cell["reference_time_grid"], name=f"{key}_reference_time_grid")
         required_trace_keys = (
-            INFO_GROWTH_TRACE_KEY,
+            VELOCITY_VARIATION_TRACE_KEY,
             "validation_oracle_local_error_trace",
             LOCAL_DEFECT_TRACE_KEY,
         )
@@ -1041,20 +1045,20 @@ def build_points(
         target_nfe = int(cell["target_nfe"])
         runtime_nfe = int(cell["runtime_nfe"])
         reference_grid = [float(x) for x in cell["reference_time_grid"]]
-        info_growth = [float(x) for x in cell[INFO_GROWTH_TRACE_KEY]]
+        velocity_variation = [float(x) for x in cell[VELOCITY_VARIATION_TRACE_KEY]]
         local_defect = [float(x) for x in cell[LOCAL_DEFECT_TRACE_KEY]]
         kappa, _widths, eps_h, kappa_integral = normalize_hardness_for_ptg(local_defect, reference_grid)
         for schedule_key in TRANSFER_SCHEDULES:
             schedule_grid = build_fixed_schedule_grid(schedule_key, runtime_nfe)
             solver_p = solver_order_for_ptg(solver_key)
-            info_growth_raw = _ptg_variant(
-                info_growth,
+            velocity_variation_raw = _ptg_variant(
+                velocity_variation,
                 reference_grid,
                 schedule_grid,
                 solver_order_p=float(solver_p),
             )
-            info_growth_reversed = _ptg_variant(
-                info_growth,
+            velocity_variation_reversed = _ptg_variant(
+                velocity_variation,
                 reference_grid,
                 schedule_grid,
                 solver_order_p=float(solver_p),
@@ -1093,21 +1097,21 @@ def build_points(
                     "reference_macro_steps": int(cell["reference_macro_steps"]),
                     "ptg_percent": float(local_defect_eta.ptg_percent),
                     "ser": float(local_defect_eta.ser),
-                    "ptg_info_growth_raw": float(info_growth_raw.ptg_percent),
-                    "ptg_info_growth_reversed": float(info_growth_reversed.ptg_percent),
                     "ptg_local_defect_eta005": float(local_defect_eta.ptg_percent),
                     "ptg_local_defect_reversed_eta005": float(local_defect_reversed_eta.ptg_percent),
-                    "ser_info_growth_raw": float(info_growth_raw.ser),
-                    "ser_info_growth_reversed": float(info_growth_reversed.ser),
+                    "ptg_velocity_variation_raw": float(velocity_variation_raw.ptg_percent),
+                    "ptg_velocity_variation_reversed": float(velocity_variation_reversed.ptg_percent),
                     "ser_local_defect_eta005": float(local_defect_eta.ser),
                     "ser_local_defect_reversed_eta005": float(local_defect_reversed_eta.ser),
+                    "ser_velocity_variation_raw": float(velocity_variation_raw.ser),
+                    "ser_velocity_variation_reversed": float(velocity_variation_reversed.ser),
                     "kappa_integral": float(kappa_integral),
                     "ptg_kappa_integral": float(local_defect_eta.kappa_integral),
                     "rho_integral": float(local_defect_eta.rho_integral),
-                    "rho_integral_info_growth_raw": float(info_growth_raw.rho_integral),
-                    "rho_integral_info_growth_reversed": float(info_growth_reversed.rho_integral),
                     "rho_integral_local_defect_eta005": float(local_defect_eta.rho_integral),
                     "rho_integral_local_defect_reversed_eta005": float(local_defect_reversed_eta.rho_integral),
+                    "rho_integral_velocity_variation_raw": float(velocity_variation_raw.rho_integral),
+                    "rho_integral_velocity_variation_reversed": float(velocity_variation_reversed.rho_integral),
                     "density_floor_eta": float(DEFAULT_DENSITY_FLOOR_ETA),
                     "eps_h": float(eps_h),
                     "kappa_mean": float(np.mean(kappa)),
@@ -1443,7 +1447,7 @@ def synthetic_payload() -> Dict[str, Any]:
                         "reference_macro_steps": int(reference_steps),
                         "reference_time_grid": reference_grid,
                         "validation_hardness_trace": local_defect_trace,
-                        "validation_info_growth_trace": trace,
+                        "validation_velocity_variation_difficulty_trace": trace,
                         "validation_oracle_local_error_trace": oracle_trace,
                         "validation_local_defect_trace": local_defect_trace,
                         "per_seed": [],
@@ -1459,7 +1463,8 @@ def synthetic_payload() -> Dict[str, Any]:
         "validation_windows": DEFAULT_VALIDATION_WINDOWS,
         "reference_macro_factor": DEFAULT_REFERENCE_MACRO_FACTOR,
         "calibration_trace_samples": DEFAULT_CALIBRATION_TRACE_SAMPLES,
-        "signal_trace_key": NATIVE_TRACE_KEY,
+        "signal_trace_key": VELOCITY_VARIATION_SIGNAL_TRACE_KEY,
+        "auxiliary_trace_key": VELOCITY_VARIATION_TRACE_KEY,
         "paper_facing_trace_key": LOCAL_DEFECT_TRACE_KEY,
         "oracle_local_error_trace_key": ORACLE_LOCAL_ERROR_TRACE_KEY,
         "density_floor_eta": DEFAULT_DENSITY_FLOOR_ETA,

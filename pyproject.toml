@@ -21,7 +21,7 @@ dependencies = [
 
 [project.scripts]
 dfi-run-schedules = "diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization:main"
-dfi-build-hardness-figure = "diffusion_flow_inference.visualization.build_hardness_mismatch_figure:main"
+dfi-build-velocity-variation-figure = "diffusion_flow_inference.visualization.build_velocity_variation_difficulty_figure:main"
 dfi-build-ptg-figure = "diffusion_flow_inference.visualization.build_ptg_observed_gain_figure:main"
 
 [tool.setuptools.packages.find]

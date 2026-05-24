@@ -3,20 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
 from diffusion_flow_inference.data.otflow_paths import project_root
 from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import BASELINE_SCHEDULE_KEYS, TRANSFER_SCHEDULE_KEYS, build_schedule_grid, schedule_display_name
-from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import NATIVE_INFO_GROWTH_TRACE_KEY
 
 PROJECT_ROOT = project_root()
-DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results" / "native_info_growth_hardness"
+DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results" / "velocity_variation_difficulty"
 DEFAULT_FIGURE_DIR = PROJECT_ROOT / "figures"
-DEFAULT_INPUT_JSON = DEFAULT_RESULTS_DIR / "native_info_growth_payload.json"
-DEFAULT_PNG = DEFAULT_FIGURE_DIR / "native_info_growth_schedule_trace.png"
-DEFAULT_PDF = DEFAULT_FIGURE_DIR / "native_info_growth_schedule_trace.pdf"
+DEFAULT_INPUT_JSON = DEFAULT_RESULTS_DIR / "velocity_variation_difficulty_payload.json"
+DEFAULT_PNG = DEFAULT_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.png"
+DEFAULT_PDF = DEFAULT_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.pdf"
+VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY = "velocity_variation_difficulty_trace"
 
 DATASET_ORDER = (
     "electricity",
@@ -26,8 +27,7 @@ DATASET_ORDER = (
     "wind_farms_wo_missing",
 )
 SCHEDULE_ORDER = BASELINE_SCHEDULE_KEYS
-NATIVE_HARDNESS_TRACE_KEY = NATIVE_INFO_GROWTH_TRACE_KEY
-PAPER_FACING_TRACE_NAME = "native_info_growth"
+PAPER_FACING_TRACE_NAME = "velocity_variation_difficulty"
 
 
 def parse_csv(text: str) -> List[str]:
@@ -48,7 +48,7 @@ def validate_time_grid(grid: Sequence[float], *, name: str = "time_grid") -> np.
 def normalize_trace(values: Sequence[float]) -> List[float]:
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim != 1 or arr.size == 0:
-        raise ValueError("Native hardness trace must be a non-empty one-dimensional sequence.")
+        raise ValueError("Velocity-variation difficulty trace must be a non-empty one-dimensional sequence.")
     fill = float(np.nanmean(arr)) if np.any(np.isfinite(arr)) else 0.0
     arr = np.nan_to_num(arr, nan=fill, posinf=fill, neginf=fill)
     arr = np.clip(arr, 0.0, None)
@@ -82,12 +82,12 @@ def synthetic_payload(*, runtime_nfe: int = 10) -> Dict[str, Any]:
     mid = 0.5 * (reference_grid[:-1] + reference_grid[1:])
     trace = 0.45 + 0.35 * np.sin(np.pi * mid) ** 2 + 0.20 * mid
     return {
-        "artifact": "native_info_growth_hardness_payload",
+        "artifact": "velocity_variation_difficulty_payload",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "paper_facing_trace": PAPER_FACING_TRACE_NAME,
-        "native_trace_key": NATIVE_HARDNESS_TRACE_KEY,
+        "trace_key": VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY,
         "reference_time_grid": [float(x) for x in reference_grid.tolist()],
-        "native_info_growth_trace": normalize_trace(trace),
+        VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY: normalize_trace(trace),
         "schedule_nodes": [schedule_node_summary(key, int(runtime_nfe)) for key in SCHEDULE_ORDER],
     }
 
@@ -105,13 +105,15 @@ def build_figure(payload: Mapping[str, Any]):
     import matplotlib.pyplot as plt
 
     ref_grid = validate_time_grid(payload["reference_time_grid"], name="reference_time_grid")
-    trace = np.asarray(payload["native_info_growth_trace"], dtype=np.float64)
+    if VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY not in payload:
+        raise KeyError(f"Payload must include {VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY!r}.")
+    trace = np.asarray(payload[VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY], dtype=np.float64)
     if trace.size != ref_grid.size - 1:
-        raise ValueError("native_info_growth_trace must have one value per reference interval.")
+        raise ValueError("velocity_variation_difficulty_trace must have one value per reference interval.")
     mid = 0.5 * (ref_grid[:-1] + ref_grid[1:])
     fig, (ax_trace, ax_nodes) = plt.subplots(2, 1, figsize=(7.2, 4.8), sharex=True, gridspec_kw={"height_ratios": [2.0, 1.2]})
     ax_trace.plot(mid, trace, color="#2F6B52", linewidth=2.0)
-    ax_trace.set_ylabel("Info-growth")
+    ax_trace.set_ylabel("Velocity-variation difficulty")
     ax_trace.grid(True, axis="y", color="#DDDDDD", linewidth=0.8)
     rows = list(payload.get("schedule_nodes", []))
     y_positions = np.arange(len(rows), dtype=np.float64)
@@ -142,12 +144,12 @@ def plot_payload(payload: Mapping[str, Any], *, png_path: Path = DEFAULT_PNG, pd
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build the native info-growth hardness trace figure.")
+    parser = argparse.ArgumentParser(description="Build the velocity-variation difficulty trace figure.")
     sub = parser.add_subparsers(dest="command", required=True)
-    synth = sub.add_parser("synthetic", help="Write a lightweight native info-growth payload.")
+    synth = sub.add_parser("synthetic", help="Write a lightweight velocity-variation difficulty payload.")
     synth.add_argument("--out-json", type=Path, default=DEFAULT_INPUT_JSON)
     synth.add_argument("--runtime-nfe", type=int, default=10)
-    plot = sub.add_parser("plot", help="Render a native info-growth payload.")
+    plot = sub.add_parser("plot", help="Render a velocity-variation difficulty payload.")
     plot.add_argument("--input-json", type=Path, default=DEFAULT_INPUT_JSON)
     plot.add_argument("--png", type=Path, default=DEFAULT_PNG)
     plot.add_argument("--pdf", type=Path, default=DEFAULT_PDF)

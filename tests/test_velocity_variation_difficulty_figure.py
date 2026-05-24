@@ -7,13 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
-import diffusion_flow_inference.visualization.build_hardness_mismatch_figure as figure_builder
+import diffusion_flow_inference.visualization.build_velocity_variation_difficulty_figure as figure_builder
 from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import BASELINE_SCHEDULE_KEYS, TRANSFER_SCHEDULE_KEYS
 
 HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
 
 
-class NativeInfoGrowthFigureTests(unittest.TestCase):
+class VelocityVariationDifficultyFigureTests(unittest.TestCase):
     def test_active_schedule_order_excludes_tvd(self) -> None:
         self.assertEqual(figure_builder.SCHEDULE_ORDER, BASELINE_SCHEDULE_KEYS)
         self.assertEqual(TRANSFER_SCHEDULE_KEYS, ("ays", "gits", "ots"))
@@ -33,20 +33,27 @@ class NativeInfoGrowthFigureTests(unittest.TestCase):
         self.assertTrue(ays["is_transfer_schedule"])
         self.assertEqual(len(uniform["time_grid"]), 5)
 
-    def test_synthetic_payload_uses_native_info_growth_trace(self) -> None:
+    def test_synthetic_payload_uses_velocity_variation_difficulty_trace(self) -> None:
         payload = figure_builder.synthetic_payload(runtime_nfe=4)
-        self.assertEqual(payload["native_trace_key"], "info_growth_hardness_by_step")
-        self.assertEqual(payload["paper_facing_trace"], "native_info_growth")
+        self.assertEqual(payload["trace_key"], "velocity_variation_difficulty_trace")
+        self.assertEqual(payload["paper_facing_trace"], "velocity_variation_difficulty")
+        self.assertIn("velocity_variation_difficulty_trace", payload)
         self.assertEqual(len(payload["schedule_nodes"]), len(BASELINE_SCHEDULE_KEYS))
         self.assertNotIn("selected_tvd_deltas", payload)
+
+    def test_build_figure_requires_velocity_variation_difficulty_trace(self) -> None:
+        payload = figure_builder.synthetic_payload(runtime_nfe=4)
+        payload.pop("velocity_variation_difficulty_trace")
+        with self.assertRaisesRegex(KeyError, "velocity_variation_difficulty_trace"):
+            figure_builder.build_figure(payload)
 
     def test_plot_payload_writes_png_and_pdf(self) -> None:
         if not HAS_MATPLOTLIB:
             self.skipTest("matplotlib is not installed")
         payload = figure_builder.synthetic_payload(runtime_nfe=4)
         with tempfile.TemporaryDirectory() as tmpdir:
-            png = Path(tmpdir) / "native.png"
-            pdf = Path(tmpdir) / "native.pdf"
+            png = Path(tmpdir) / "velocity_variation_difficulty.png"
+            pdf = Path(tmpdir) / "velocity_variation_difficulty.pdf"
             outputs = figure_builder.plot_payload(payload, png_path=png, pdf_path=pdf, dpi=120)
             self.assertEqual(outputs["png"], str(png))
             self.assertEqual(outputs["pdf"], str(pdf))

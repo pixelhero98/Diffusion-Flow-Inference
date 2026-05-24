@@ -39,9 +39,9 @@ from diffusion_flow_inference.data.otflow_paths import (
 from diffusion_flow_inference.evaluation.otflow_sampling_support import _apply_sample_overrides, _restore_sample_overrides
 from diffusion_flow_inference.schedule_transfer.otflow_schedule_diagnostics import _collect_calibration
 from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
-    NATIVE_INFO_GROWTH_TRACE_KEY,
-    compute_info_growth_hardness_numpy,
-    resolved_info_growth_scale,
+    VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY,
+    compute_velocity_variation_difficulty_numpy,
+    resolved_velocity_variation_scale,
 )
 from diffusion_flow_inference.models.otflow_train_val import save_json, seed_all
 
@@ -51,7 +51,7 @@ VALIDATION_PHASE = "validation_tuning"
 LOCKED_TEST_PHASE = "locked_test"
 
 UNIFORM_SCHEDULER_KEY = "uniform"
-DEFAULT_SIGNAL_TRACE_KEY = NATIVE_INFO_GROWTH_TRACE_KEY
+DEFAULT_SIGNAL_TRACE_KEY = VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY
 DEFAULT_SHARED_BACKBONE_ROOT = (
     project_results_root() / "shared_backbones" / "otflow_fullhorizon_seed0"
 )
@@ -934,7 +934,7 @@ def load_conditional_generation_checkpoint_splits(
 
 
 
-def collect_forecast_calibration(model: OTFlow, ds_val, cfg, *, macro_steps: int, solver_name: str, seed: int, calibration_trace_samples: int = 1, info_growth_scale_multiplier: float = 1.0) -> Dict[str, Any]:
+def collect_forecast_calibration(model: OTFlow, ds_val, cfg, *, macro_steps: int, solver_name: str, seed: int, calibration_trace_samples: int = 1, velocity_variation_scale_multiplier: float = 1.0) -> Dict[str, Any]:
     trace_samples=int(calibration_trace_samples)
     if trace_samples<=0: raise ValueError(f"calibration_trace_samples must be positive, got {calibration_trace_samples}")
     reference_time_grid: Optional[np.ndarray]=None; disagreement_rows=[]; residual_rows=[]; oracle_rows=[]; trace_rows=[]; device=cfg.train.device
@@ -951,14 +951,14 @@ def collect_forecast_calibration(model: OTFlow, ds_val, cfg, *, macro_steps: int
         d=np.stack(dsamps,axis=0).mean(axis=0); r=np.stack(rsamps,axis=0).mean(axis=0); o=np.stack(osamps,axis=0).mean(axis=0)
         disagreement_rows.append(d); residual_rows.append(r); oracle_rows.append(o)
         for step_idx,(dv,rv,ov) in enumerate(zip(d.tolist(),r.tolist(),o.tolist())): trace_rows.append({"example_index":int(example_idx),"step_index":int(step_idx),"disagreement":float(dv),"residual_norm":float(rv),"oracle_local_error":float(ov)})
-    if not disagreement_rows: raise ValueError("Forecast validation split is empty; cannot calibrate native info-growth trace.")
+    if not disagreement_rows: raise ValueError("Forecast validation split is empty; cannot calibrate velocity-variation difficulty trace.")
     disagreement_arr=np.stack(disagreement_rows,axis=0); residual_arr=np.stack(residual_rows,axis=0); oracle_arr=np.stack(oracle_rows,axis=0)
-    base_scale=resolved_info_growth_scale(residual_arr.reshape(-1)); effective_scale=float(base_scale)*float(info_growth_scale_multiplier)
-    if effective_scale<=0.0: raise ValueError(f"info_growth_scale_multiplier must keep scale positive, got {info_growth_scale_multiplier}")
-    info_growth_arr=compute_info_growth_hardness_numpy(residual_arr,disagreement_arr,scale=float(effective_scale))
+    base_scale=resolved_velocity_variation_scale(residual_arr.reshape(-1)); effective_scale=float(base_scale)*float(velocity_variation_scale_multiplier)
+    if effective_scale<=0.0: raise ValueError(f"velocity_variation_scale_multiplier must keep scale positive, got {velocity_variation_scale_multiplier}")
+    velocity_variation_arr=compute_velocity_variation_difficulty_numpy(residual_arr,disagreement_arr,scale=float(effective_scale))
     if reference_time_grid is None: reference_time_grid=np.linspace(0.0,1.0,int(macro_steps)+1,dtype=np.float64)
-    corr_signal=info_growth_arr[:,1:].reshape(-1); corr_oracle=oracle_arr[:,1:].reshape(-1)
-    return {"macro_steps":int(macro_steps),"solver":str(solver_name),"n_windows":int(info_growth_arr.shape[0]),"calibration_trace_samples":int(trace_samples),"reference_time_grid":[float(x) for x in reference_time_grid.tolist()],"reference_time_alignment":"left_endpoint","base_info_growth_scale":float(base_scale),"info_growth_scale":float(effective_scale),"info_growth_scale_multiplier":float(info_growth_scale_multiplier),"rows":trace_rows,"disagreement_by_step":[float(x) for x in disagreement_arr.mean(axis=0).tolist()],"residual_norm_by_step":[float(x) for x in residual_arr.mean(axis=0).tolist()],"oracle_local_error_by_step":[float(x) for x in oracle_arr.mean(axis=0).tolist()],NATIVE_INFO_GROWTH_TRACE_KEY:[float(x) for x in info_growth_arr.mean(axis=0).tolist()],"signal_correlations_vs_oracle":{NATIVE_INFO_GROWTH_TRACE_KEY:{"spearman":safe_spearman(corr_signal,corr_oracle)}}}
+    corr_signal=velocity_variation_arr[:,1:].reshape(-1); corr_oracle=oracle_arr[:,1:].reshape(-1)
+    return {"macro_steps":int(macro_steps),"solver":str(solver_name),"n_windows":int(velocity_variation_arr.shape[0]),"calibration_trace_samples":int(trace_samples),"reference_time_grid":[float(x) for x in reference_time_grid.tolist()],"reference_time_alignment":"left_endpoint","base_velocity_variation_scale":float(base_scale),"velocity_variation_scale":float(effective_scale),"velocity_variation_scale_multiplier":float(velocity_variation_scale_multiplier),"rows":trace_rows,"disagreement_by_step":[float(x) for x in disagreement_arr.mean(axis=0).tolist()],"residual_norm_by_step":[float(x) for x in residual_arr.mean(axis=0).tolist()],"oracle_local_error_by_step":[float(x) for x in oracle_arr.mean(axis=0).tolist()],VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY:[float(x) for x in velocity_variation_arr.mean(axis=0).tolist()],"signal_correlations_vs_oracle":{VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY:{"spearman":safe_spearman(corr_signal,corr_oracle)}}}
 
 
 @torch.no_grad()

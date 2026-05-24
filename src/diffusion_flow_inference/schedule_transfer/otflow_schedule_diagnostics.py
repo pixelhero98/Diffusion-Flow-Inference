@@ -8,10 +8,10 @@ import torch
 from diffusion_flow_inference.evaluation.otflow_sampling_support import _choose_valid_windows
 from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
     MODEL_SIGNAL_SPECS,
-    NATIVE_INFO_GROWTH_ROW_KEY,
-    NATIVE_INFO_GROWTH_TRACE_KEY,
-    compute_info_growth_hardness_numpy,
-    resolved_info_growth_scale,
+    VELOCITY_VARIATION_DIFFICULTY_ROW_KEY,
+    VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY,
+    compute_velocity_variation_difficulty_numpy,
+    resolved_velocity_variation_scale,
 )
 from diffusion_flow_inference.models.otflow_train_val import (
     _future_time_context_seq,
@@ -59,8 +59,8 @@ def _step_arrays(rows: Sequence[Mapping[str, Any]], macro_steps: int) -> Dict[st
     disagreement_by_step = []
     oracle_by_step = []
     signal_specs = [(row_key, out_key) for row_key, out_key in MODEL_SIGNAL_SPECS if out_key != "disagreement_by_step"]
-    if rows and NATIVE_INFO_GROWTH_ROW_KEY in rows[0]:
-        signal_specs.append((NATIVE_INFO_GROWTH_ROW_KEY, NATIVE_INFO_GROWTH_TRACE_KEY))
+    if rows and VELOCITY_VARIATION_DIFFICULTY_ROW_KEY in rows[0]:
+        signal_specs.append((VELOCITY_VARIATION_DIFFICULTY_ROW_KEY, VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY))
     signal_means: Dict[str, List[float]] = {out_key: [] for _, out_key in signal_specs}
     for step_idx in range(int(macro_steps)):
         d_vals = np.asarray(
@@ -239,13 +239,13 @@ def _collect_calibration(
             rows.append(row)
 
     residual_values = np.asarray([float(row["residual_norm"]) for row in rows], dtype=np.float64)
-    info_growth_scale = resolved_info_growth_scale(residual_values)
+    velocity_variation_scale = resolved_velocity_variation_scale(residual_values)
     for row in rows:
-        row[NATIVE_INFO_GROWTH_ROW_KEY] = float(
-            compute_info_growth_hardness_numpy(
+        row[VELOCITY_VARIATION_DIFFICULTY_ROW_KEY] = float(
+            compute_velocity_variation_difficulty_numpy(
                 np.asarray([float(row["residual_norm"])], dtype=np.float64),
                 np.asarray([float(row["disagreement"])], dtype=np.float64),
-                scale=float(info_growth_scale),
+                scale=float(velocity_variation_scale),
             )[0]
         )
 
@@ -261,7 +261,9 @@ def _collect_calibration(
     d_arr = np.asarray([float(row["disagreement"]) for row in corr_rows], dtype=np.float64)
     z_arr = np.asarray([float(row["normalized_disagreement"]) for row in corr_rows], dtype=np.float64)
     e_arr = np.asarray([float(row["oracle_local_error"]) for row in corr_rows], dtype=np.float64)
-    signal_specs = list(MODEL_SIGNAL_SPECS) + [(NATIVE_INFO_GROWTH_ROW_KEY, NATIVE_INFO_GROWTH_TRACE_KEY)]
+    signal_specs = list(MODEL_SIGNAL_SPECS) + [
+        (VELOCITY_VARIATION_DIFFICULTY_ROW_KEY, VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY)
+    ]
     signal_correlations_vs_oracle = {
         out_key: _safe_corr(np.asarray([float(row[row_key]) for row in corr_rows], dtype=np.float64), e_arr)
         for row_key, out_key in signal_specs
@@ -276,7 +278,7 @@ def _collect_calibration(
         "exclude_step0_for_correlation": True,
         "reference_time_grid": [float(x) for x in reference_time_grid.tolist()],
         "reference_time_alignment": "left_endpoint",
-        "info_growth_scale": float(info_growth_scale),
+        "velocity_variation_scale": float(velocity_variation_scale),
         "rows": rows,
         "step_mu": step_stats["step_mu"],
         "step_sigma": step_stats["step_sigma"],
