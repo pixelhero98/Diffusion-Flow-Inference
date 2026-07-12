@@ -12,19 +12,13 @@ import torch
 from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.data.otflow_datasets import build_dataset_splits_from_arrays
 from diffusion_flow_inference.data.otflow_medical_constants import (
-    DEFAULT_LONG_TERM_ECG_MANIFEST_NAME,
-    DEFAULT_SLEEP_EDF_METADATA_NAME,
-    DEFAULT_SLEEP_EDF_NPZ_NAME,
     LONG_TERM_HEADERED_ECG_DATASET_KEY,
     SLEEP_EDF_DATASET_KEY,
-    default_long_term_headered_ecg_dataset_dir,
-    default_long_term_headered_ecg_manifest_path,
-    default_sleep_edf_data_path,
-    default_sleep_edf_metadata_path,
+    long_term_headered_ecg_dataset_dir,
+    long_term_headered_ecg_manifest_path,
     sleep_edf_metadata_path_for_npz,
 )
-
-DEFAULT_MEDICAL_STAGING_ROOT: Path | None = None
+from diffusion_flow_inference.data.otflow_paths import sleep_edf_data_path
 
 LONG_TERM_ECG_FREQUENCY_LABEL = "250_hz"
 LONG_TERM_ECG_SAMPLING_RATE_HZ = 250.0
@@ -401,7 +395,7 @@ def prepare_long_term_headered_ecg_dataset(
     horizon: int,
     force: bool = False,
 ) -> Dict[str, Any]:
-    manifest_path = default_long_term_headered_ecg_manifest_path(dataset_root)
+    manifest_path = long_term_headered_ecg_manifest_path(dataset_root)
     if manifest_path.exists() and not bool(force):
         manifest = _load_long_term_headered_ecg_manifest(manifest_path)
         manifest_history = int(manifest.get("context_length", -1))
@@ -426,7 +420,7 @@ def prepare_long_term_headered_ecg_dataset(
     except ImportError as exc:
         raise ImportError("wfdb is required for long_term_headered_ECG_records support.") from exc
 
-    dataset_dir = default_long_term_headered_ecg_dataset_dir(dataset_root)
+    dataset_dir = long_term_headered_ecg_dataset_dir(dataset_root)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
     heas = sorted(source_dir.glob("*.hea"))
@@ -527,7 +521,7 @@ def long_term_headered_ecg_prep_stub(
     history_len: int,
     horizon: int,
 ) -> Dict[str, Any]:
-    manifest_path = default_long_term_headered_ecg_manifest_path(dataset_root)
+    manifest_path = long_term_headered_ecg_manifest_path(dataset_root)
     status = "ready" if manifest_path.exists() else "missing_manifest"
     return {
         "dataset_key": LONG_TERM_HEADERED_ECG_DATASET_KEY,
@@ -618,7 +612,7 @@ def _sleep_pairing_key(path: Path) -> str:
     return stem[:7]
 
 
-def _canonical_sleep_label(raw_label: str) -> Optional[str]:
+def _normalize_sleep_label(raw_label: str) -> Optional[str]:
     return SLEEP_EDF_STAGE_MAP.get(str(raw_label).strip(), None)
 
 
@@ -638,15 +632,15 @@ def _build_sleep_epoch_labels(total_epochs: int, hyp_path: Path) -> np.ndarray:
     epoch_labels = np.full(int(total_epochs), -1, dtype=np.int64)
     onset, duration, labels = _read_sleep_annotations(hyp_path)
     for start_s, duration_s, raw_label in zip(onset.tolist(), duration.tolist(), labels):
-        canonical = _canonical_sleep_label(raw_label)
+        normalized_label = _normalize_sleep_label(raw_label)
         start_epoch = int(round(float(start_s) / float(SLEEP_EDF_EPOCH_SECONDS)))
         epoch_count = int(round(float(duration_s) / float(SLEEP_EDF_EPOCH_SECONDS)))
         if epoch_count <= 0:
             continue
         stop_epoch = min(int(total_epochs), int(start_epoch) + int(epoch_count))
-        if canonical is None:
+        if normalized_label is None:
             continue
-        label_idx = int(SLEEP_EDF_STAGE_NAMES.index(str(canonical)))
+        label_idx = int(SLEEP_EDF_STAGE_NAMES.index(str(normalized_label)))
         epoch_labels[int(start_epoch) : int(stop_epoch)] = int(label_idx)
     return epoch_labels
 
@@ -656,7 +650,7 @@ def prepare_sleep_edf_dataset(
     *,
     force: bool = False,
 ) -> Dict[str, Any]:
-    npz_path = Path(out_path or default_sleep_edf_data_path()).resolve()
+    npz_path = Path(out_path or sleep_edf_data_path()).resolve()
     metadata_path = sleep_edf_metadata_path_for_npz(npz_path)
     if npz_path.exists() and metadata_path.exists() and not bool(force):
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -837,7 +831,7 @@ def build_dataset_splits_from_sleep_edf(
             f"{int(SLEEP_EDF_HORIZON_LEN)}, got {int(cfg.prediction_horizon)}."
         )
     cfg.apply_overrides(use_cond_features=True, cond_standardize=False)
-    resolved_path = Path(path or default_sleep_edf_data_path()).resolve()
+    resolved_path = Path(path or sleep_edf_data_path()).resolve()
     if not resolved_path.exists():
         prepare_sleep_edf_dataset(resolved_path)
     metadata = prepare_sleep_edf_dataset(resolved_path)
@@ -847,7 +841,7 @@ def build_dataset_splits_from_sleep_edf(
             "Sleep-EDF metadata does not match requested NPZ path: "
             f"prepared_npz_path={prepared_npz}, requested={resolved_path}."
         )
-    data = np.load(str(resolved_path), allow_pickle=True)
+    data = np.load(str(resolved_path), allow_pickle=False)
     params_raw = np.asarray(data["params_raw"], dtype=np.float32)
     cond_raw = np.asarray(data["cond_raw"], dtype=np.float32)
     mids = np.asarray(data["mids"], dtype=np.float32)
@@ -878,7 +872,6 @@ def build_dataset_splits_from_sleep_edf(
 
 
 __all__ = [
-    "DEFAULT_MEDICAL_STAGING_ROOT",
     "LONG_TERM_ECG_FREQUENCY_LABEL",
     "LONG_TERM_ECG_MASE_SEASONAL_PERIOD",
     "LONG_TERM_HEADERED_ECG_DATASET_KEY",
@@ -891,10 +884,8 @@ __all__ = [
     "SLEEP_EDF_STAGE_NAMES",
     "build_dataset_splits_from_sleep_edf",
     "build_long_term_headered_ecg_forecast_splits",
-    "default_long_term_headered_ecg_dataset_dir",
-    "default_long_term_headered_ecg_manifest_path",
-    "default_sleep_edf_data_path",
-    "default_sleep_edf_metadata_path",
+    "long_term_headered_ecg_dataset_dir",
+    "long_term_headered_ecg_manifest_path",
     "long_term_headered_ecg_prep_stub",
     "long_term_headered_ecg_source_dir",
     "medical_staging_root",

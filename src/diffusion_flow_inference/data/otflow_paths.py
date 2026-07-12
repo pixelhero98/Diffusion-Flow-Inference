@@ -1,12 +1,7 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-
-
-def code_root() -> Path:
-    return Path(__file__).resolve().parents[1]
 
 
 def project_root() -> Path:
@@ -32,36 +27,21 @@ def project_outputs_root() -> Path:
     return project_root() / "outputs"
 
 
-def project_results_root() -> Path:
-    return project_outputs_root()
-
-
 def project_backbone_matrix_root() -> Path:
     return project_outputs_root() / "backbone_matrix"
 
 
-def default_backbone_manifest_path() -> Path:
+def backbone_manifest_path() -> Path:
     return project_backbone_matrix_root() / "backbone_manifest.json"
 
 
-def project_checkpoint_import_root() -> Path:
-    return project_outputs_root() / "imported_backbones"
-
-
-def project_medical_staging_root() -> Path:
-    raw = str(os.environ.get("OTFLOW_MEDICAL_STAGING_ROOT", "") or "").strip()
-    if not raw:
-        raise RuntimeError("Set OTFLOW_MEDICAL_STAGING_ROOT to prepare raw medical datasets.")
-    return Path(raw).expanduser().resolve()
-
-
-def default_cryptos_data_path() -> str:
+def cryptos_data_path() -> str:
     return str(project_data_root() / "cryptos_binance_spot_monthly_1s_l10.npz")
 
 
-def default_es_mbp_10_data_path() -> str:
+def es_mbp_10_data_path() -> str:
     return str(project_data_root() / "es_mbp_10.npz")
 
 
-def default_sleep_edf_data_path() -> str:
+def sleep_edf_data_path() -> str:
     return str(project_data_root() / "sleep_edf_3ch_100hz_stage_conditioned.npz")

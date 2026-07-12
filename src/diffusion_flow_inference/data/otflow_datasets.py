@@ -6,43 +6,26 @@ Contains:
 - L2FeatureMap: valid-by-construction encoding/decoding (raw L2 <-> unconstrained params)
 - Standardization helpers
 - WindowedParamSequenceDataset (history->target windows; optional future horizon for rollout)
-- Builders for prepared NPZ, crypto, and synthetic sequences
+- Builders for prepared NPZ and active conditional-generation sequences
 - Basic raw-space metrics
-- NEW: chronological split builders with train-only normalization (anti-leakage)
+- Chronological split builders with train-only normalization (anti-leakage)
 
 Also includes derived microstructure conditioning features (cond) computed from the
-parameter sequence: spread, returns, abs returns, microprice deviation, multi-depth
-imbalance, Δbest sizes, rolling vol.
+parameter sequence: spread, returns, absolute returns, microprice deviation,
+multi-depth imbalance, changes in best sizes, and rolling volatility.
 """
 
 from __future__ import annotations
 
-import json
-import math
-import os
-from functools import lru_cache
 from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
 
 from diffusion_flow_inference.models.config import OTFlowConfig
-from diffusion_flow_inference.data.otflow_paths import project_data_root
+from diffusion_flow_inference.data.otflow_paths import cryptos_data_path, es_mbp_10_data_path
 
 ArrayLike = Union[np.ndarray, torch.Tensor]
-DEFAULT_SYNTHETIC_LENGTH = 2_000_000
-DEFAULT_CRYPTOS_NPZ = str(project_data_root() / "cryptos_binance_spot_monthly_1s_l10.npz")
-DEFAULT_ES_MBP_10_NPZ = str(project_data_root() / "es_mbp_10.npz")
-DEFAULT_OPTIVER_NPZ = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "data_optiver",
-    "optiver_train_8stocks_l2.npz",
-)
-DEFAULT_LOBSTER_SYNTH_PROFILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "data_synthetic",
-    "lobster_free_sample_profile_10.json",
-)
 
 
 # -----------------------------
@@ -71,8 +54,27 @@ class L2FeatureMap:
         bid_p: np.ndarray,
         bid_v: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        T, L = ask_p.shape
-        assert L == self.L
+        arrays = {
+            "ask_p": np.asarray(ask_p),
+            "ask_v": np.asarray(ask_v),
+            "bid_p": np.asarray(bid_p),
+            "bid_v": np.asarray(bid_v),
+        }
+        if arrays["ask_p"].ndim != 2:
+            raise ValueError(f"ask_p must be a two-dimensional array, got shape={arrays['ask_p'].shape}.")
+        T, L = arrays["ask_p"].shape
+        if L != self.L:
+            raise ValueError(f"ask_p has {L} levels, expected {self.L}.")
+        expected_shape = (T, L)
+        for name, values in arrays.items():
+            if values.shape != expected_shape:
+                raise ValueError(f"{name} must have shape {expected_shape}, got {values.shape}.")
+        ask_p, ask_v, bid_p, bid_v = (
+            arrays["ask_p"],
+            arrays["ask_v"],
+            arrays["bid_p"],
+            arrays["bid_v"],
+        )
 
         mid = 0.5 * (ask_p[:, 0] + bid_p[:, 0])
         spread = np.maximum(ask_p[:, 0] - bid_p[:, 0], self.eps)
@@ -115,9 +117,14 @@ class L2FeatureMap:
         `delta_mid[t]` is interpreted as `mid[t] - mid[t-1]`. Therefore, `init_mid`
         should be the previous mid (at t-1 for the first decoded row).
         """
+        params = np.asarray(params)
+        if params.ndim != 2:
+            raise ValueError(f"params must be a two-dimensional array, got shape={params.shape}.")
         T, D = params.shape
         L = self.L
-        assert D == 4 * L, f"Expected D={4*L}, got {D}"
+        expected_dim = 4 * L
+        if D != expected_dim:
+            raise ValueError(f"params must have {expected_dim} columns, got {D}.")
 
         delta_mid = params[:, 0]
         log_spread = params[:, 1]
@@ -446,7 +453,7 @@ class WindowedParamSequenceDataset(torch.utils.data.Dataset):
         valid_start_mask: Optional[np.ndarray] = None,
         dataset_kind: Optional[str] = None,
         dataset_metadata: Optional[Dict[str, object]] = None,
-        global_offset: int = 0,  # NEW: maps local t -> original/global t
+        global_offset: int = 0,
     ):
         super().__init__()
         self.params = params.astype(np.float32)
@@ -552,7 +559,7 @@ class WindowedParamSequenceDataset(torch.utils.data.Dataset):
 
         meta = {
             "t": int(t),  # local
-            "t_global": int(t_global),  # NEW
+            "t_global": int(t_global),
             "mid_prev": float(self.mids[t - 1]),
             "init_mid_for_window": float(self.mids[t - self.H]),
         }
@@ -580,271 +587,45 @@ class WindowedParamSequenceDataset(torch.utils.data.Dataset):
 # Loaders / builders
 # -----------------------------
 def load_l2_npz(path: str) -> Dict[str, np.ndarray]:
-    """Load a standardized L2 snapshot NPZ prepared by `lob_prepare_dataset.py`.
+    """Load a numeric L2 snapshot NPZ with no pickled object arrays.
 
-    Required keys:
-      - ask_p, ask_v, bid_p, bid_v : [T,L] float arrays
+    Required data representation:
+      - ask_p, ask_v, bid_p, bid_v : [T, L] numeric arrays; or
+      - params_raw : [T, 4L] and mids : [T] numeric arrays.
 
     Optional keys:
-      - mids : [T] float32
-      - params_raw : [T,4L] float32
-      - ts : [T] timestamps
+      - local_timestamps, timestamps, ts_event, ts_recv, or ts : [T] timestamps
+      - segment_ends : one-dimensional segment endpoints
     """
-    data = np.load(path, allow_pickle=True)
-    out = {k: data[k] for k in data.files}
+    with np.load(path, allow_pickle=False) as data:
+        out = {k: data[k] for k in data.files}
     for k in ("ask_p", "ask_v", "bid_p", "bid_v", "mids", "params_raw"):
         if k in out:
             out[k] = out[k].astype(np.float32)
     return out
 
 
-def _build_windowed_dataset(
-    params_raw: np.ndarray,
-    mids: np.ndarray,
-    cfg: OTFlowConfig,
-    stride: int,
+# -----------------------------
+# Split-aware builders
+# -----------------------------
+def _derive_fractional_split_bounds(
+    T: int,
     *,
-    timestamps: Optional[np.ndarray] = None,
-) -> WindowedParamSequenceDataset:
-    """Build a windowed LOB dataset from one parameterized array bundle."""
-    # params
-    if cfg.standardize:
-        params, mu, sig = standardize_params(params_raw)
-    else:
-        params, mu, sig = params_raw.astype(np.float32), None, None
-
-    # cond features
-    cond = None
-    c_mu = c_sig = None
-    if cfg.use_cond_features:
-        cond_raw = build_cond_features(params_raw, mids, cfg)
-        if cfg.cond_standardize:
-            cond, c_mu, c_sig = standardize_cond(cond_raw)
-        else:
-            cond = cond_raw
-
-        _set_model_cond_dim(cfg, int(cond.shape[1]))
-
-    time_features = None
-    time_gap_scale = None
-    time_feature_source = "none"
-    time_feature_mode = _time_feature_mode(cfg)
-    if time_feature_mode != "none":
-        time_gap_scale = _fit_time_gap_scale(
-            None if timestamps is None else np.asarray(timestamps, dtype=np.int64),
-            train_end=len(params_raw),
-            segment_ends=None,
-        )
-        time_features = _build_time_features(
-            None if timestamps is None else np.asarray(timestamps, dtype=np.int64),
-            gap_scale=float(time_gap_scale),
-            segment_ends=None,
-            include_elapsed=bool(time_feature_mode == "gap_elapsed"),
-        )
-        if time_features is None:
-            time_features = np.zeros((len(params_raw), _time_feature_dim(time_feature_mode)), dtype=np.float32)
-            time_feature_source = "missing_timestamps_zero_fill"
-        else:
-            time_feature_source = "timestamps"
-
-    return WindowedParamSequenceDataset(
-        params=params,
-        mids=mids,
-        history_len=cfg.history_len,
-        stride=stride,
-        params_mean=mu,
-        params_std=sig,
-        future_horizon=_future_horizon_from_cfg(cfg),
-        cond=cond,
-        cond_mean=c_mu,
-        cond_std=c_sig,
-        time_features=time_features,
-        time_gap_scale=time_gap_scale,
-        time_feature_source=time_feature_source,
-        global_offset=0,
-    )
+    train_frac: float,
+    val_frac: float,
+    test_frac: Optional[float],
+) -> Tuple[int, int]:
+    """Derive full-timeline train and validation boundaries from split fractions."""
+    if test_frac is None:
+        test_frac = 1.0 - train_frac - val_frac
+    if train_frac <= 0 or val_frac < 0 or test_frac < 0:
+        raise ValueError("Invalid split fractions.")
+    total = train_frac + val_frac + test_frac
+    if abs(total - 1.0) > 1e-6:
+        raise ValueError(f"Split fractions must sum to 1.0, got {total:.6f}")
+    return int(round(T * train_frac)), int(round(T * (train_frac + val_frac)))
 
 
-def default_lobster_synth_profile_path() -> str:
-    return DEFAULT_LOBSTER_SYNTH_PROFILE
-
-
-@lru_cache(maxsize=None)
-def load_lobster_synth_profile(path: Optional[str] = None) -> Dict[str, object]:
-    resolved = path or default_lobster_synth_profile_path()
-    with open(resolved, "r", encoding="utf-8") as f:
-        profile = json.load(f)
-    profiles = profile.get("profiles", [])
-    if not profiles:
-        raise ValueError(f"LOBSTER synthetic profile at {resolved} contains no regimes.")
-    return profile
-
-
-def _generate_synthetic_l2(
-    levels: int, length: int, seed: int, eps: float = 1e-8,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Generate LOBSTER-calibrated synthetic L2 data with persistent liquidity regimes."""
-    rng = np.random.default_rng(seed)
-    L = levels
-    T = int(length)
-    profile = load_lobster_synth_profile()
-    regimes = [
-        regime for regime in profile["profiles"]
-        if len(regime["log_ask_vol_mean"]) >= L and len(regime["log_bid_vol_mean"]) >= L
-    ]
-    if not regimes:
-        raise ValueError(f"No LOBSTER regimes support levels={L}.")
-
-    weights = np.asarray([math.sqrt(float(regime.get("rows", 1.0))) for regime in regimes], dtype=np.float64)
-    weights = weights / weights.sum()
-    tick_size = float(np.median([float(regime["tick_size"]) for regime in regimes]))
-    level_weights = np.exp(-0.35 * np.arange(L, dtype=np.float64))
-
-    ask_p = np.zeros((T, L), dtype=np.float32)
-    bid_p = np.zeros((T, L), dtype=np.float32)
-    ask_v = np.zeros((T, L), dtype=np.float32)
-    bid_v = np.zeros((T, L), dtype=np.float32)
-    mid_ticks = np.zeros(T, dtype=np.float64)
-
-    current_regime = None
-    spread_log = 0.0
-    imbalance = 0.0
-    ask_gap_state = np.zeros(max(0, L - 1), dtype=np.float64)
-    bid_gap_state = np.zeros(max(0, L - 1), dtype=np.float64)
-    ask_log_v_state = np.zeros(L, dtype=np.float64)
-    bid_log_v_state = np.zeros(L, dtype=np.float64)
-    segment_remaining = 0
-
-    def _sample_segment_length(remaining: int) -> int:
-        target = max(128.0, min(4096.0, float(max(1, T)) / 12.0))
-        seg_len = int(rng.lognormal(mean=math.log(target), sigma=0.5))
-        return min(remaining, max(128, seg_len))
-
-    def _set_regime(regime: Dict[str, object], *, reset: bool) -> None:
-        nonlocal current_regime, spread_log, imbalance, ask_gap_state, bid_gap_state, ask_log_v_state, bid_log_v_state
-        current_regime = regime
-
-        ask_gap_mu = np.asarray(regime["log_ask_gap_mean"][: max(0, L - 1)], dtype=np.float64)
-        bid_gap_mu = np.asarray(regime["log_bid_gap_mean"][: max(0, L - 1)], dtype=np.float64)
-        ask_log_v_mu = np.asarray(regime["log_ask_vol_mean"][:L], dtype=np.float64)
-        bid_log_v_mu = np.asarray(regime["log_bid_vol_mean"][:L], dtype=np.float64)
-
-        if reset:
-            spread_log = float(regime["log_spread_mean"])
-            imbalance = float(regime["imb_mean"])
-            ask_gap_state = ask_gap_mu.copy()
-            bid_gap_state = bid_gap_mu.copy()
-            ask_log_v_state = ask_log_v_mu.copy()
-            bid_log_v_state = bid_log_v_mu.copy()
-            return
-
-        spread_log = 0.5 * spread_log + 0.5 * float(regime["log_spread_mean"])
-        imbalance = 0.5 * imbalance + 0.5 * float(regime["imb_mean"])
-        ask_gap_state = 0.5 * ask_gap_state + 0.5 * ask_gap_mu
-        bid_gap_state = 0.5 * bid_gap_state + 0.5 * bid_gap_mu
-        ask_log_v_state = 0.5 * ask_log_v_state + 0.5 * ask_log_v_mu
-        bid_log_v_state = 0.5 * bid_log_v_state + 0.5 * bid_log_v_mu
-
-    for t in range(T):
-        if segment_remaining <= 0:
-            next_regime = regimes[int(rng.choice(len(regimes), p=weights))]
-            _set_regime(next_regime, reset=(t == 0))
-            segment_remaining = _sample_segment_length(T - t)
-        segment_remaining -= 1
-
-        assert current_regime is not None
-        seasonality = current_regime["seasonality_abs_ret"]
-        season_idx = min(len(seasonality) - 1, int(len(seasonality) * t / max(1, T)))
-        season_scale = max(0.05, float(seasonality[season_idx]))
-
-        spread_phi = float(np.clip(current_regime["spread_phi"], 0.7, 0.995))
-        spread_std = max(0.05, float(current_regime["log_spread_std"]))
-        spread_noise = spread_std * math.sqrt(max(1.0 - spread_phi ** 2, 1e-4))
-        spread_log = (
-            float(current_regime["log_spread_mean"])
-            + spread_phi * (spread_log - float(current_regime["log_spread_mean"]))
-            + spread_noise * rng.normal()
-        )
-        spread_ticks = max(1.0, round(math.exp(spread_log)))
-
-        imb_phi = float(np.clip(current_regime["imb_phi"], 0.5, 0.995))
-        imb_std = max(0.02, float(current_regime["imb_std"]))
-        imb_noise = imb_std * math.sqrt(max(1.0 - imb_phi ** 2, 1e-4))
-        imbalance = (
-            float(current_regime["imb_mean"])
-            + imb_phi * (imbalance - float(current_regime["imb_mean"]))
-            + imb_noise * rng.normal()
-        )
-        imbalance = float(np.clip(imbalance, -0.98, 0.98))
-
-        ret_scale = max(0.02, float(current_regime["ret_scale_ticks"])) * math.sqrt(season_scale)
-        shock = rng.standard_t(df=5) / math.sqrt(5.0 / 3.0)
-        ret_ticks = 0.12 * imbalance + 0.45 * ret_scale * shock
-        if rng.random() < float(current_regime["jump_prob_5ticks"]):
-            ret_ticks += float(rng.choice((-1.0, 1.0)) * (5.0 + abs(rng.normal(scale=1.5))))
-        elif rng.random() < float(current_regime["jump_prob_2ticks"]):
-            ret_ticks += float(rng.choice((-1.0, 1.0)) * (2.0 + abs(rng.normal(scale=0.75))))
-        if t == 0:
-            mid_ticks[t] = round(100.0 / tick_size)
-        else:
-            mid_ticks[t] = mid_ticks[t - 1] + ret_ticks
-
-        if L > 1:
-            gap_rho = 0.9
-            ask_gap_mu = np.asarray(current_regime["log_ask_gap_mean"][: L - 1], dtype=np.float64)
-            ask_gap_std = np.asarray(current_regime["log_ask_gap_std"][: L - 1], dtype=np.float64)
-            bid_gap_mu = np.asarray(current_regime["log_bid_gap_mean"][: L - 1], dtype=np.float64)
-            bid_gap_std = np.asarray(current_regime["log_bid_gap_std"][: L - 1], dtype=np.float64)
-            gap_scale = math.sqrt(max(1.0 - gap_rho ** 2, 1e-4))
-            ask_gap_state = ask_gap_mu + gap_rho * (ask_gap_state - ask_gap_mu) + gap_scale * ask_gap_std * rng.normal(size=L - 1)
-            bid_gap_state = bid_gap_mu + gap_rho * (bid_gap_state - bid_gap_mu) + gap_scale * bid_gap_std * rng.normal(size=L - 1)
-            ask_gap_ticks = np.maximum(1.0, np.round(np.exp(ask_gap_state)))
-            bid_gap_ticks = np.maximum(1.0, np.round(np.exp(bid_gap_state)))
-        else:
-            ask_gap_ticks = np.empty(0, dtype=np.float64)
-            bid_gap_ticks = np.empty(0, dtype=np.float64)
-
-        vol_rho = 0.97
-        ask_log_v_mu = np.asarray(current_regime["log_ask_vol_mean"][:L], dtype=np.float64)
-        ask_log_v_std = np.asarray(current_regime["log_ask_vol_std"][:L], dtype=np.float64)
-        bid_log_v_mu = np.asarray(current_regime["log_bid_vol_mean"][:L], dtype=np.float64)
-        bid_log_v_std = np.asarray(current_regime["log_bid_vol_std"][:L], dtype=np.float64)
-        vol_scale = math.sqrt(max(1.0 - vol_rho ** 2, 1e-4))
-        ask_log_v_state = ask_log_v_mu + vol_rho * (ask_log_v_state - ask_log_v_mu) + vol_scale * ask_log_v_std * rng.normal(size=L)
-        bid_log_v_state = bid_log_v_mu + vol_rho * (bid_log_v_state - bid_log_v_mu) + vol_scale * bid_log_v_std * rng.normal(size=L)
-
-        imbalance_tilt = 0.35 * imbalance * level_weights
-        ask_v_row = np.exp(np.clip(ask_log_v_state - imbalance_tilt, math.log(eps), 16.0))
-        bid_v_row = np.exp(np.clip(bid_log_v_state + imbalance_tilt, math.log(eps), 16.0))
-
-        mid_price = mid_ticks[t] * tick_size
-        ask_p[t, 0] = mid_price + 0.5 * spread_ticks * tick_size
-        bid_p[t, 0] = mid_price - 0.5 * spread_ticks * tick_size
-        for i in range(1, L):
-            ask_p[t, i] = ask_p[t, i - 1] + ask_gap_ticks[i - 1] * tick_size
-            bid_p[t, i] = bid_p[t, i - 1] - bid_gap_ticks[i - 1] * tick_size
-
-        ask_v[t] = ask_v_row.astype(np.float32)
-        bid_v[t] = bid_v_row.astype(np.float32)
-
-    return ask_p, ask_v.astype(np.float32), bid_p, bid_v.astype(np.float32)
-
-
-def build_dataset_synthetic(
-    cfg: OTFlowConfig,
-    length: int = DEFAULT_SYNTHETIC_LENGTH,
-    seed: int = 0,
-    stride: int = 1,
-) -> WindowedParamSequenceDataset:
-    ask_p, ask_v, bid_p, bid_v = _generate_synthetic_l2(cfg.levels, length, seed, cfg.eps)
-    fm = L2FeatureMap(cfg.levels, cfg.eps)
-    params_raw, mids = fm.encode_sequence(ask_p, ask_v, bid_p, bid_v)
-    return _build_windowed_dataset(params_raw, mids, cfg, stride=stride)
-
-
-# -----------------------------
-# Split-aware builders (NEW)
-# -----------------------------
 def _resolve_split_bounds(
     T: int,
     train_frac: float = 0.7,
@@ -856,18 +637,23 @@ def _resolve_split_bounds(
     """Return (train_end, val_end) as absolute timestep boundaries in [0, T].
 
     Splits are interpreted over raw timesteps (params rows).
-    """
-    if test_frac is None:
-        test_frac = 1.0 - train_frac - val_frac
 
+    When one boundary is explicit, it is retained and the missing boundary is
+    derived from the configured fractions over the full timeline. When both
+    are explicit, both are retained. The resolved boundaries must satisfy
+    ``0 < train_end < val_end <= T``.
+    """
     if train_end is None or val_end is None:
-        if train_frac <= 0 or val_frac < 0 or test_frac < 0:
-            raise ValueError("Invalid split fractions.")
-        s = train_frac + val_frac + test_frac
-        if abs(s - 1.0) > 1e-6:
-            raise ValueError(f"Split fractions must sum to 1.0, got {s:.6f}")
-        train_end = int(round(T * train_frac))
-        val_end = int(round(T * (train_frac + val_frac)))
+        derived_train_end, derived_val_end = _derive_fractional_split_bounds(
+            T,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            test_frac=test_frac,
+        )
+        if train_end is None:
+            train_end = derived_train_end
+        if val_end is None:
+            val_end = derived_val_end
 
     train_end = int(train_end)
     val_end = int(val_end)
@@ -912,19 +698,27 @@ def _resolve_segment_split_bounds(
     train_end: Optional[int],
     val_end: Optional[int],
 ) -> Tuple[int, int]:
+    """Resolve train and validation boundaries aligned to complete segments.
+
+    When exactly one boundary is explicit, it is retained while the missing
+    boundary is derived from the configured fractions over the full timeline.
+    Both resolved boundaries are then aligned upward to the first enclosing
+    segment boundary. When both boundaries are omitted, segment-count
+    fractions preserve the existing whole-record split policy.
+    """
     segment_ends = np.asarray(segment_ends, dtype=np.int64)
     if len(segment_ends) < 3:
         raise ValueError("Need at least 3 segments for train/val/test splits.")
     if int(segment_ends[-1]) != int(T):
         raise ValueError("segment_ends must terminate at T.")
 
-    if test_frac is None:
-        test_frac = 1.0 - train_frac - val_frac
-
-    if train_end is None or val_end is None:
-        s = train_frac + val_frac + test_frac
-        if abs(s - 1.0) > 1e-6:
-            raise ValueError(f"Split fractions must sum to 1.0, got {s:.6f}")
+    if train_end is None and val_end is None:
+        _derive_fractional_split_bounds(
+            T,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            test_frac=test_frac,
+        )
         n_segments = len(segment_ends)
         train_seg = max(1, int(round(n_segments * train_frac)))
         val_seg = max(train_seg + 1, int(round(n_segments * (train_frac + val_frac))))
@@ -932,10 +726,21 @@ def _resolve_segment_split_bounds(
         train_end = int(segment_ends[train_seg - 1])
         val_end = int(segment_ends[val_seg - 1])
     else:
+        if train_end is None or val_end is None:
+            derived_train_end, derived_val_end = _derive_fractional_split_bounds(
+                T,
+                train_frac=train_frac,
+                val_frac=val_frac,
+                test_frac=test_frac,
+            )
+            if train_end is None:
+                train_end = derived_train_end
+            if val_end is None:
+                val_end = derived_val_end
         train_idx = int(np.searchsorted(segment_ends, int(train_end), side="left"))
         val_idx = int(np.searchsorted(segment_ends, int(val_end), side="left"))
         train_idx = min(max(train_idx, 0), len(segment_ends) - 2)
-        val_idx = min(max(val_idx, train_idx + 1), len(segment_ends) - 1)
+        val_idx = min(max(val_idx, 0), len(segment_ends) - 1)
         train_end = int(segment_ends[train_idx])
         val_end = int(segment_ends[val_idx])
 
@@ -1268,10 +1073,12 @@ def build_dataset_splits_from_npz_l2(
     train_end: Optional[int] = None,
     val_end: Optional[int] = None,
 ) -> Dict[str, object]:
-    """Chronological split for a *preprocessed* standardized L2 NPZ file.
+    """Build chronological splits from a prepared numeric L2 NPZ archive.
 
-    For datasets that are not off-the-shelf (exchange dumps, Kaggle files, etc.),
-    first convert them to the standardized NPZ using `lob_prepare_dataset.py`.
+    The archive must contain either ``params_raw`` with ``mids`` or all four
+    raw book arrays (``ask_p``, ``ask_v``, ``bid_p``, and ``bid_v``). Optional
+    timestamps and segment boundaries are preserved when present. Object arrays
+    and pickled payloads are intentionally unsupported.
     """
     fm = L2FeatureMap(cfg.levels, cfg.eps)
     data = load_l2_npz(path)
@@ -1304,20 +1111,8 @@ def build_dataset_splits_from_npz_l2(
     )
 
 
-def default_cryptos_npz_path() -> str:
-    return DEFAULT_CRYPTOS_NPZ
-
-
-def default_es_mbp_10_npz_path() -> str:
-    return DEFAULT_ES_MBP_10_NPZ
-
-
-def default_optiver_npz_path() -> str:
-    return DEFAULT_OPTIVER_NPZ
-
-
 def build_dataset_splits_from_cryptos(
-    path: str,
+    path: str | None,
     cfg: OTFlowConfig,
     *,
     stride_train: int = 1,
@@ -1329,7 +1124,7 @@ def build_dataset_splits_from_cryptos(
     val_end: Optional[int] = None,
 ) -> Dict[str, object]:
     """Named dataset helper for the prepared Tardis crypto L2 archive."""
-    resolved_path = path or default_cryptos_npz_path()
+    resolved_path = path or cryptos_data_path()
     return build_dataset_splits_from_npz_l2(
         path=resolved_path,
         cfg=cfg,
@@ -1344,7 +1139,7 @@ def build_dataset_splits_from_cryptos(
 
 
 def build_dataset_splits_from_es_mbp_10(
-    path: str,
+    path: str | None,
     cfg: OTFlowConfig,
     *,
     stride_train: int = 1,
@@ -1356,71 +1151,10 @@ def build_dataset_splits_from_es_mbp_10(
     val_end: Optional[int] = None,
 ) -> Dict[str, object]:
     """Named dataset helper for the prepared Databento ES MBP-10 archive."""
-    resolved_path = path or default_es_mbp_10_npz_path()
+    resolved_path = path or es_mbp_10_data_path()
     return build_dataset_splits_from_npz_l2(
         path=resolved_path,
         cfg=cfg,
-        stride_train=stride_train,
-        stride_eval=stride_eval,
-        train_frac=train_frac,
-        val_frac=val_frac,
-        test_frac=test_frac,
-        train_end=train_end,
-        val_end=val_end,
-    )
-
-
-def build_dataset_splits_from_optiver(
-    path: str,
-    cfg: OTFlowConfig,
-    *,
-    stride_train: int = 1,
-    stride_eval: int = 1,
-    train_frac: float = 0.7,
-    val_frac: float = 0.1,
-    test_frac: Optional[float] = None,
-    train_end: Optional[int] = None,
-    val_end: Optional[int] = None,
-) -> Dict[str, object]:
-    """Named dataset helper for the prepared Optiver L2 archive."""
-    resolved_path = path or default_optiver_npz_path()
-    return build_dataset_splits_from_npz_l2(
-        path=resolved_path,
-        cfg=cfg,
-        stride_train=stride_train,
-        stride_eval=stride_eval,
-        train_frac=train_frac,
-        val_frac=val_frac,
-        test_frac=test_frac,
-        train_end=train_end,
-        val_end=val_end,
-    )
-
-
-def build_dataset_splits_synthetic(
-    cfg: OTFlowConfig,
-    length: int = DEFAULT_SYNTHETIC_LENGTH,
-    seed: int = 0,
-    *,
-    stride_train: int = 1,
-    stride_eval: int = 1,
-    train_frac: float = 0.7,
-    val_frac: float = 0.1,
-    test_frac: Optional[float] = None,
-    train_end: Optional[int] = None,
-    val_end: Optional[int] = None,
-) -> Dict[str, object]:
-    """LOBSTER-calibrated synthetic chronological split with train-only normalization."""
-    ask_p, ask_v, bid_p, bid_v = _generate_synthetic_l2(cfg.levels, length, seed, cfg.eps)
-
-    fm = L2FeatureMap(cfg.levels, cfg.eps)
-    params_raw, mids = fm.encode_sequence(ask_p, ask_v, bid_p, bid_v)
-
-    return build_dataset_splits_from_arrays(
-        params_raw=params_raw,
-        mids=mids,
-        cfg=cfg,
-        timestamps=None,
         stride_train=stride_train,
         stride_eval=stride_eval,
         train_frac=train_frac,
@@ -1450,17 +1184,10 @@ def compute_basic_l2_metrics(ask_p: np.ndarray, ask_v: np.ndarray, bid_p: np.nda
 __all__ = [
     "L2FeatureMap",
     "WindowedParamSequenceDataset",
-    "build_dataset_synthetic",
     "build_dataset_splits_from_arrays",
     "build_dataset_splits_from_npz_l2",
+    "build_dataset_splits_from_cryptos",
     "build_dataset_splits_from_es_mbp_10",
-    "build_dataset_splits_from_optiver",
-    "build_dataset_splits_synthetic",
-    "default_cryptos_npz_path",
-    "default_es_mbp_10_npz_path",
-    "default_optiver_npz_path",
-    "default_lobster_synth_profile_path",
-    "load_lobster_synth_profile",
     "standardize_params",
     "standardize_cond",
     "load_l2_npz",
@@ -1468,5 +1195,4 @@ __all__ = [
     "apply_standardizer",
     "build_cond_features",
     "compute_basic_l2_metrics",
-    "DEFAULT_SYNTHETIC_LENGTH",
 ]

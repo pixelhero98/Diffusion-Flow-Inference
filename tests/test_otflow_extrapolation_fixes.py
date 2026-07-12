@@ -9,10 +9,18 @@ import numpy as np
 import torch
 
 from diffusion_flow_inference.models.config import OTFlowConfig
-from diffusion_flow_inference.data.otflow_datasets import WindowedParamSequenceDataset
+from diffusion_flow_inference.data.otflow_datasets import (
+    L2FeatureMap,
+    WindowedParamSequenceDataset,
+    build_dataset_splits_from_arrays,
+    load_l2_npz,
+)
 from diffusion_flow_inference.evaluation.otflow_evaluation_support import choose_forecast_example_indices, evaluate_forecast_schedule, parse_forecast_datasets
 from diffusion_flow_inference.data.otflow_forecast_data import ForecastExampleRef, ForecastSeriesRecord, MonashForecastWindowDataset, _regular_time_features
-from diffusion_flow_inference.data.otflow_medical_constants import LONG_TERM_HEADERED_ECG_DATASET_KEY, default_long_term_headered_ecg_manifest_path
+from diffusion_flow_inference.data.otflow_medical_constants import (
+    LONG_TERM_HEADERED_ECG_DATASET_KEY,
+    long_term_headered_ecg_manifest_path,
+)
 from diffusion_flow_inference.data.otflow_medical_datasets import prepare_long_term_headered_ecg_dataset
 
 
@@ -62,6 +70,67 @@ class ExtrapolationFixesTest(unittest.TestCase):
         ds_two_step = WindowedParamSequenceDataset(params, mids, history_len=3, future_horizon=1)
         self.assertEqual(ds_two_step.start_indices[-1], 8)
 
+    def test_l2_feature_map_rejects_invalid_shapes_without_asserts(self) -> None:
+        feature_map = L2FeatureMap(levels=2)
+        wrong_levels = np.zeros((4, 3), dtype=np.float32)
+
+        with self.assertRaisesRegex(ValueError, "ask_p has 3 levels, expected 2"):
+            feature_map.encode_sequence(wrong_levels, wrong_levels, wrong_levels, wrong_levels)
+        with self.assertRaisesRegex(ValueError, "params must have 8 columns, got 7"):
+            feature_map.decode_sequence(np.zeros((4, 7), dtype=np.float32), init_mid=100.0)
+
+    def test_load_l2_npz_rejects_pickled_object_arrays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            numeric_path = root / "numeric.npz"
+            np.savez(numeric_path, params_raw=np.zeros((8, 4), dtype=np.float32), mids=np.zeros(8, dtype=np.float32))
+            loaded = load_l2_npz(str(numeric_path))
+            self.assertEqual(loaded["params_raw"].dtype, np.float32)
+
+            object_path = root / "object.npz"
+            np.savez(object_path, payload=np.asarray([{"unsafe": True}], dtype=object))
+            with self.assertRaisesRegex(ValueError, "Object arrays cannot be loaded"):
+                load_l2_npz(str(object_path))
+
+    def test_partial_explicit_split_bounds_are_honored(self) -> None:
+        params = np.arange(120 * 4, dtype=np.float32).reshape(120, 4)
+        mids = np.arange(120, dtype=np.float32)
+
+        def build_stats(**kwargs):
+            return build_dataset_splits_from_arrays(
+                params,
+                mids,
+                OTFlowConfig(levels=1, history_len=4, standardize=False),
+                **kwargs,
+            )["stats"]
+
+        train_explicit = build_stats(train_end=60)
+        self.assertEqual((train_explicit["train_end"], train_explicit["val_end"]), (60, 96))
+        val_explicit = build_stats(val_end=100)
+        self.assertEqual((val_explicit["train_end"], val_explicit["val_end"]), (84, 100))
+
+        segment_ends = np.asarray([30, 60, 90, 120], dtype=np.int64)
+        segment_train_explicit = build_stats(
+            segment_ends=segment_ends,
+            train_frac=0.5,
+            val_frac=0.25,
+            train_end=60,
+        )
+        self.assertEqual(
+            (segment_train_explicit["train_end"], segment_train_explicit["val_end"]),
+            (60, 90),
+        )
+        segment_val_explicit = build_stats(
+            segment_ends=segment_ends,
+            train_frac=0.5,
+            val_frac=0.25,
+            val_end=90,
+        )
+        self.assertEqual(
+            (segment_val_explicit["train_end"], segment_val_explicit["val_end"]),
+            (60, 90),
+        )
+
     def test_parse_forecast_datasets_rejects_high_level_ecg_until_checkpoint_is_supported(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown forecast datasets"):
             parse_forecast_datasets(f"electricity,{LONG_TERM_HEADERED_ECG_DATASET_KEY}")
@@ -70,7 +139,7 @@ class ExtrapolationFixesTest(unittest.TestCase):
 
     def test_stale_ecg_manifest_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            manifest_path = default_long_term_headered_ecg_manifest_path(Path(tmpdir))
+            manifest_path = long_term_headered_ecg_manifest_path(Path(tmpdir))
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             manifest_path.write_text(
                 json.dumps(

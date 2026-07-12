@@ -8,27 +8,33 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from diffusion_flow_inference.data.otflow_experiment_plan import (
-    CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS,
-    CANONICAL_FORECAST_PAPER_DATASETS,
+    PAPER_CONDITIONAL_GENERATION_DATASETS,
+    PAPER_FORECAST_DATASETS,
     experiment_plan_by_key,
 )
 from diffusion_flow_inference.data.otflow_medical_constants import (
     LONG_TERM_HEADERED_ECG_DATASET_KEY,
     SLEEP_EDF_DATASET_KEY,
-    default_long_term_headered_ecg_manifest_path,
-    default_sleep_edf_data_path,
+    long_term_headered_ecg_manifest_path,
 )
-from diffusion_flow_inference.data.otflow_paths import project_backbone_matrix_root as default_project_backbone_matrix_root, project_data_root, project_outputs_root, project_paper_dataset_root
+from diffusion_flow_inference.data.otflow_paths import (
+    backbone_manifest_path,
+    project_backbone_matrix_root,
+    project_data_root,
+    project_outputs_root,
+    project_paper_dataset_root,
+    sleep_edf_data_path,
+)
 
 FORECAST_FAMILY = "forecast_extrapolation"
 CONDITIONAL_GENERATION_FAMILY = "conditional_generation"
 BACKBONE_NAME_OTFLOW = "otflow"
-DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE = "transformer"
-DEFAULT_SEED = 0
+CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE = "transformer"
+BACKBONE_SEED = 0
 TRAIN_BUDGET_STEPS: Tuple[int, ...] = (4000, 8000, 12000, 16000, 20000)
 STANDARD_ARTIFACT_SUMMARY_NAME = "artifact_summary.json"
-MANIFEST_VERSION = "fm_backbone_manifest_v1"
-AUDIT_VERSION = "fm_backbone_manifest_check_v1"
+BACKBONE_MANIFEST_SCHEMA = "fm_backbone_manifest"
+BACKBONE_READINESS_AUDIT_SCHEMA = "backbone_readiness"
 IMPORTED_EXTERNAL_SOURCE_KIND = "imported_external"
 
 ACTIVE_FORECAST_BACKBONE_BUDGETS: Mapping[str, Tuple[int, ...]] = {
@@ -56,7 +62,7 @@ class BackboneArtifactSpec:
     checkpoint_path: str
     summary_path: str
     status: str
-    seed: int = DEFAULT_SEED
+    seed: int = BACKBONE_SEED
     source_kind: str = "planned"
     metadata_path: Optional[str] = None
     field_network_type: Optional[str] = None
@@ -78,19 +84,11 @@ def train_budget_label(train_steps: int) -> str:
     return f"{steps}_steps"
 
 
-def project_backbone_matrix_root() -> Path:
-    return default_project_backbone_matrix_root()
-
-
-def default_backbone_manifest_path() -> Path:
-    return project_backbone_matrix_root() / "backbone_manifest.json"
-
-
-def default_otflow_reuse_root() -> Path:
+def shared_backbone_root() -> Path:
     return project_outputs_root() / "shared_backbones" / "otflow_fullhorizon_seed0"
 
 
-def default_imported_otflow_backbone_root() -> Path:
+def imported_backbones_root() -> Path:
     return project_outputs_root() / "imported_backbones" / "otflow"
 
 
@@ -100,7 +98,7 @@ def build_backbone_checkpoint_id(
     benchmark_family: str,
     dataset_key: str,
     train_steps: int,
-    seed: int = DEFAULT_SEED,
+    seed: int = BACKBONE_SEED,
     field_network_type: Optional[str] = None,
 ) -> str:
     if str(benchmark_family) == FORECAST_FAMILY:
@@ -135,7 +133,7 @@ def _conditional_generation_artifact_root(matrix_root: Path, backbone_name: str,
         / "conditional_generation"
         / train_budget_label(int(train_steps))
         / str(dataset_key)
-        / DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        / CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
     )
 
 
@@ -279,9 +277,9 @@ def _otflow_artifact_compatibility(
         except KeyError:
             errors.append("metadata.field_network_type is missing or invalid")
         else:
-            if observed_field != str(field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE):
+            if observed_field != str(field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE):
                 errors.append(
-                    f"metadata.field_network_type={observed_field!r} != expected {str(field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
+                    f"metadata.field_network_type={observed_field!r} != expected {str(field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
                 )
 
     cond_dim = _metadata_cond_dim(metadata)
@@ -296,10 +294,10 @@ def _otflow_artifact_compatibility(
             f"checkpoint future_block_len={int(signature['future_block_len'])} != expected {int(spec.future_block_len)}"
         )
     if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY and str(signature["field_network_type"]) != str(
-        field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
     ):
         errors.append(
-            f"checkpoint field_network_type={str(signature['field_network_type'])!r} != expected {str(field_network_type or DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
+            f"checkpoint field_network_type={str(signature['field_network_type'])!r} != expected {str(field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
         )
 
     if errors:
@@ -328,7 +326,7 @@ def _existing_matrix_artifact(
     metadata = _safe_json(paths["metadata_path"])
     field_network_type = None if metadata is None else metadata.get("field_network_type")
     expected_field_network_type = (
-        DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
         if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY
         else None
     )
@@ -398,12 +396,12 @@ def _existing_otflow_reuse_artifact(
             reuse_root
             / "conditional_generation"
             / str(dataset_key)
-            / DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+            / CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
         )
         checkpoint_path = artifact_root / "model.pt"
         metadata_path = artifact_root / "checkpoint_metadata.json"
         summary_path = artifact_root / "checkpoint_metadata.json"
-        field_network_type = DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        field_network_type = CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
     else:
         raise ValueError(f"Unsupported benchmark_family={benchmark_family}")
     if not checkpoint_path.exists():
@@ -581,7 +579,7 @@ def normalize_imported_backbone_artifacts(
     budget_steps: Sequence[int] = TRAIN_BUDGET_STEPS,
 ) -> Dict[str, Any]:
     resolved_matrix_root = Path(matrix_root or project_backbone_matrix_root()).resolve()
-    resolved_import_root = Path(imported_root or default_imported_otflow_backbone_root()).resolve()
+    resolved_import_root = Path(imported_root or imported_backbones_root()).resolve()
     normalized: List[Dict[str, Any]] = []
     if not resolved_import_root.exists():
         return {
@@ -639,7 +637,7 @@ def _planned_artifact(
         train_steps=int(train_steps),
     )
     field_network_type = (
-        DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+        CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
         if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY
         else None
     )
@@ -674,7 +672,7 @@ def _iter_target_specs(
     budget_steps: Sequence[int],
 ) -> Iterable[BackboneArtifactSpec]:
     requested_steps = {int(value) for value in budget_steps}
-    for dataset_key in tuple(CANONICAL_FORECAST_PAPER_DATASETS):
+    for dataset_key in tuple(PAPER_FORECAST_DATASETS):
         for train_steps in ACTIVE_FORECAST_BACKBONE_BUDGETS.get(str(dataset_key), ()):
             if int(train_steps) not in requested_steps:
                 continue
@@ -686,7 +684,7 @@ def _iter_target_specs(
                 train_steps=int(train_steps),
                 seed=int(seed),
             )
-    for dataset_key in tuple(CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS):
+    for dataset_key in tuple(PAPER_CONDITIONAL_GENERATION_DATASETS):
         for train_steps in ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS.get(str(dataset_key), ()):
             if int(train_steps) not in requested_steps:
                 continue
@@ -704,12 +702,12 @@ def materialize_backbone_manifest(
     otflow_reuse_root: str | Path | None = None,
     imported_backbone_root: str | Path | None = None,
     budget_steps: Sequence[int] = TRAIN_BUDGET_STEPS,
-    seed: int = DEFAULT_SEED,
+    seed: int = BACKBONE_SEED,
     write_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     resolved_matrix_root = Path(matrix_root or project_backbone_matrix_root()).resolve()
-    resolved_reuse_root = Path(otflow_reuse_root or default_otflow_reuse_root()).resolve()
-    resolved_import_root = Path(imported_backbone_root or default_imported_otflow_backbone_root()).resolve()
+    resolved_reuse_root = Path(otflow_reuse_root or shared_backbone_root()).resolve()
+    resolved_import_root = Path(imported_backbone_root or imported_backbones_root()).resolve()
     artifacts: List[Dict[str, Any]] = []
     ready_count = 0
     for planned in _iter_target_specs(matrix_root=resolved_matrix_root, seed=int(seed), budget_steps=budget_steps):
@@ -734,7 +732,7 @@ def materialize_backbone_manifest(
             ready_count += 1
         artifacts.append(artifact.to_dict())
     payload = {
-        "version": MANIFEST_VERSION,
+        "schema": BACKBONE_MANIFEST_SCHEMA,
         "seed": int(seed),
         "train_budget_steps": [int(value) for value in budget_steps],
         "matrix_root": str(resolved_matrix_root),
@@ -745,7 +743,7 @@ def materialize_backbone_manifest(
         "missing_count": int(len(artifacts) - ready_count),
         "artifacts": artifacts,
     }
-    target_path = Path(write_path or default_backbone_manifest_path()).resolve()
+    target_path = Path(write_path or backbone_manifest_path()).resolve()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
@@ -786,7 +784,7 @@ def build_runtime_probe(
     sleep_edf_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     resolved_dataset_root = Path(dataset_root or project_paper_dataset_root()).resolve()
-    resolved_sleep_path = Path(sleep_edf_path or default_sleep_edf_data_path()).resolve()
+    resolved_sleep_path = Path(sleep_edf_path or sleep_edf_data_path()).resolve()
     monash_root = resolved_dataset_root / "monash"
     import_names = ("numpy", "torch", "wfdb", "pyedflib")
     imports = {
@@ -795,12 +793,12 @@ def build_runtime_probe(
     }
     forecast_dataset_presence = {
         str(dataset_key): bool((monash_root / str(dataset_key) / "manifest.json").exists())
-        for dataset_key in CANONICAL_FORECAST_PAPER_DATASETS
+        for dataset_key in PAPER_FORECAST_DATASETS
         if str(dataset_key) != LONG_TERM_HEADERED_ECG_DATASET_KEY
     }
     dataset_presence = {
         "monash_manifests": forecast_dataset_presence,
-        LONG_TERM_HEADERED_ECG_DATASET_KEY: bool(default_long_term_headered_ecg_manifest_path(resolved_dataset_root).exists()),
+        LONG_TERM_HEADERED_ECG_DATASET_KEY: bool(long_term_headered_ecg_manifest_path(resolved_dataset_root).exists()),
         SLEEP_EDF_DATASET_KEY: bool(resolved_sleep_path.exists()),
         "cryptos_npz": bool((project_data_root() / "cryptos_binance_spot_monthly_1s_l10.npz").exists()),
         "es_mbp_10_npz": bool((project_data_root() / "es_mbp_10.npz").exists()),
@@ -821,7 +819,7 @@ def build_backbone_readiness_audit(
     dataset_root: str | Path | None = None,
     sleep_edf_path: str | Path | None = None,
     budget_steps: Sequence[int] = TRAIN_BUDGET_STEPS,
-    seed: int = DEFAULT_SEED,
+    seed: int = BACKBONE_SEED,
     write_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     normalization = normalize_imported_backbone_artifacts(
@@ -838,8 +836,8 @@ def build_backbone_readiness_audit(
         write_path=write_path,
     )
     readiness = {
-        "version": AUDIT_VERSION,
-        "manifest_path": str(Path(write_path or default_backbone_manifest_path()).resolve()),
+        "schema": BACKBONE_READINESS_AUDIT_SCHEMA,
+        "manifest_path": str(Path(write_path or backbone_manifest_path()).resolve()),
         "manifest": manifest,
         "normalization": normalization,
         "runtime_probe": build_runtime_probe(dataset_root=dataset_root, sleep_edf_path=sleep_edf_path),
@@ -850,27 +848,25 @@ def build_backbone_readiness_audit(
 __all__ = [
     "ACTIVE_FORECAST_BACKBONE_BUDGETS",
     "ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS",
-    "AUDIT_VERSION",
+    "BACKBONE_MANIFEST_SCHEMA",
     "BACKBONE_NAME_OTFLOW",
+    "BACKBONE_READINESS_AUDIT_SCHEMA",
     "CONDITIONAL_GENERATION_FAMILY",
-    "DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE",
-    "DEFAULT_SEED",
+    "BACKBONE_SEED",
+    "CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE",
     "FORECAST_FAMILY",
     "IMPORTED_EXTERNAL_SOURCE_KIND",
-    "MANIFEST_VERSION",
     "STANDARD_ARTIFACT_SUMMARY_NAME",
     "TRAIN_BUDGET_STEPS",
     "BackboneArtifactSpec",
     "build_backbone_checkpoint_id",
     "build_backbone_readiness_audit",
-    "default_backbone_manifest_path",
-    "default_imported_otflow_backbone_root",
-    "default_otflow_reuse_root",
+    "imported_backbones_root",
     "expected_artifact_root",
     "find_backbone_artifact",
     "load_backbone_manifest",
     "materialize_backbone_manifest",
     "normalize_imported_backbone_artifacts",
-    "project_backbone_matrix_root",
+    "shared_backbone_root",
     "train_budget_label",
 ]

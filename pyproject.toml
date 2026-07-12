@@ -19,6 +19,9 @@ dependencies = [
   "pyedflib>=0.1.38",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
 [project.scripts]
 dfi-run-schedules = "diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization:main"
 dfi-build-velocity-variation-figure = "diffusion_flow_inference.visualization.build_velocity_variation_difficulty_figure:main"

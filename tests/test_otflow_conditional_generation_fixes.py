@@ -4,10 +4,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
 
+import diffusion_flow_inference.data.otflow_medical_datasets as medical_datasets
 from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.evaluation.fm_backbone_registry import (
     BACKBONE_NAME_OTFLOW,
@@ -141,6 +143,35 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "does not match requested NPZ path"):
                 prepare_sleep_edf_dataset(requested)
+
+    def test_sleep_loader_disables_pickle(self) -> None:
+        cfg = OTFlowConfig(
+            device=torch.device("cpu"),
+            levels=1,
+            token_dim=3,
+            history_len=medical_datasets.SLEEP_EDF_HISTORY_LEN,
+            rollout_mode="non_ar",
+            future_block_len=medical_datasets.SLEEP_EDF_HORIZON_LEN,
+            use_cond_features=True,
+            cond_standardize=False,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            npz_path = Path(tmpdir) / "sleep_edf.npz"
+            npz_path.write_bytes(b"placeholder")
+            metadata = {
+                "prepared_npz_path": str(npz_path),
+                "sampling_rate_hz": 100.0,
+                "channels": [],
+                "stage_names": [],
+                "epoch_samples": medical_datasets.SLEEP_EDF_EPOCH_SAMPLES,
+            }
+            with (
+                patch.object(medical_datasets, "prepare_sleep_edf_dataset", return_value=metadata),
+                patch.object(medical_datasets.np, "load", side_effect=RuntimeError("sentinel")) as load,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "sentinel"):
+                    medical_datasets.build_dataset_splits_from_sleep_edf(str(npz_path), cfg)
+                load.assert_called_once_with(str(npz_path.resolve()), allow_pickle=False)
 
     def test_readiness_manifest_marks_conditional_checkpoint_without_conditional_state_invalid(self) -> None:
         cfg = _tiny_cfg(cond_dim=0)

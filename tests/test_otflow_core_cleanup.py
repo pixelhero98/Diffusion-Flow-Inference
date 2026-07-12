@@ -112,7 +112,7 @@ class OTFlowCoreCleanupTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Unexpected key"):
                 load_checkpoint_model(ckpt_path, torch.device("cpu"))
 
-    def test_checkpoint_loader_ignores_removed_baseline_config_keys(self) -> None:
+    def test_checkpoint_loader_rejects_removed_model_config_keys(self) -> None:
         torch.manual_seed(5)
         cfg = self._cfg(use_minibatch_ot=True)
         model = OTFlow(cfg)
@@ -129,17 +129,14 @@ class OTFlowCoreCleanupTest(unittest.TestCase):
                 "cgan_recon_weight": 5.0,
             }
         )
-        cfg_dict["nf"] = {"flow_layers": 6, "flow_scale_clip": 2.0, "share_coupling_backbone": True}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             ckpt_path = Path(tmp_dir) / "model.pt"
             torch.save({"cfg": cfg_dict, "model_state": model.state_dict()}, ckpt_path)
-            loaded, loaded_cfg = load_checkpoint_model(ckpt_path, torch.device("cpu"))
+            with self.assertRaisesRegex(TypeError, "config section 'model' contains unsupported keys"):
+                load_checkpoint_model(ckpt_path, torch.device("cpu"))
 
-        self.assertIsInstance(loaded, OTFlow)
-        self.assertFalse(hasattr(loaded_cfg.model, "baseline_latent_dim"))
-
-    def test_checkpoint_loader_ignores_removed_sampler_config_keys(self) -> None:
+    def test_checkpoint_loader_rejects_removed_sampler_config_keys(self) -> None:
         torch.manual_seed(6)
         cfg = self._cfg(use_minibatch_ot=True)
         model = OTFlow(cfg)
@@ -171,24 +168,56 @@ class OTFlowCoreCleanupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             ckpt_path = Path(tmp_dir) / "model.pt"
             torch.save({"cfg": cfg_dict, "model_state": model.state_dict()}, ckpt_path)
-            loaded, loaded_cfg = load_checkpoint_model(ckpt_path, torch.device("cpu"))
+            with self.assertRaisesRegex(TypeError, "config section 'sample' contains unsupported keys"):
+                load_checkpoint_model(ckpt_path, torch.device("cpu"))
 
-        self.assertIsInstance(loaded, OTFlow)
-        self.assertFalse(hasattr(loaded_cfg.sample, "adaptive_trigger_mode"))
-        self.assertFalse(hasattr(loaded_cfg.sample, "refine_trigger_mode"))
+    def test_checkpoint_loader_rejects_unknown_config_sections(self) -> None:
+        cfg = self._cfg(use_minibatch_ot=True)
+        model = OTFlow(cfg)
+        cfg_dict = cfg.to_dict()
+        cfg_dict["nf"] = {"flow_layers": 6, "flow_scale_clip": 2.0, "share_coupling_backbone": True}
 
-    def test_solver_cleanup_preserves_dpmpp_and_adaptive_rk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "model.pt"
+            torch.save({"cfg": cfg_dict, "model_state": model.state_dict()}, ckpt_path)
+            with self.assertRaisesRegex(TypeError, "cfg has invalid sections.*nf"):
+                load_checkpoint_model(ckpt_path, torch.device("cpu"))
+
+    def test_checkpoint_loader_rejects_invalid_checkpoint_structure(self) -> None:
+        cfg = self._cfg(use_minibatch_ot=True)
+        invalid_payloads = (
+            ({"model_state": {}}, "invalid top-level keys"),
+            ({"cfg": [], "model_state": {}}, "'cfg' must be a mapping"),
+            ({"cfg": cfg.to_dict(), "model_state": []}, "'model_state' must be a mapping"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ckpt_path = Path(tmp_dir) / "model.pt"
+            for payload, message in invalid_payloads:
+                with self.subTest(message=message):
+                    torch.save(payload, ckpt_path)
+                    with self.assertRaisesRegex(TypeError, message):
+                        load_checkpoint_model(ckpt_path, torch.device("cpu"))
+
+    def test_solver_names_require_the_documented_identifiers(self) -> None:
         cfg = self._cfg(use_minibatch_ot=False)
         model = OTFlow(cfg)
 
-        self.assertEqual(model._resolve_solver_name("dpm++2m"), "dpmpp2m")
-        self.assertEqual(model._resolve_solver_name("dpm++"), "dpmpp2m")
-        self.assertEqual(model._resolve_solver_name("rk45-adaptive"), "rk45_adaptive")
-        self.assertEqual(model._resolve_solver_name("dopri5-adaptive"), "dopri5_adaptive")
-        for removed_solver in ("euler_adaptive", "euler_refine_half", "euler_refine_heun"):
-            with self.subTest(removed_solver=removed_solver):
+        for solver_name in ("euler", "heun", "midpoint_rk2", "dpmpp2m", "dopri5", "dopri5_adaptive", "rk45", "rk45_adaptive"):
+            with self.subTest(solver_name=solver_name):
+                self.assertEqual(model._resolve_solver_name(solver_name), solver_name)
+        for unsupported_solver in (
+            "dpm++2m",
+            "dpm++",
+            "rk45-adaptive",
+            "dopri5-adaptive",
+            "euler_adaptive",
+            "euler_refine_half",
+            "euler_refine_heun",
+        ):
+            with self.subTest(unsupported_solver=unsupported_solver):
                 with self.assertRaisesRegex(ValueError, "Unknown sample solver"):
-                    model._resolve_solver_name(removed_solver)
+                    model._resolve_solver_name(unsupported_solver)
 
     def test_fixed_solver_trace_omits_adaptive_noise_fields(self) -> None:
         torch.manual_seed(7)
@@ -196,7 +225,7 @@ class OTFlowCoreCleanupTest(unittest.TestCase):
         model = OTFlow(cfg)
         hist = torch.randn(2, cfg.history_len, cfg.context_dim)
 
-        _, trace = model.sample_trace(hist, steps=3, solver="dpm++2m")
+        _, trace = model.sample_trace(hist, steps=3, solver="dpmpp2m")
 
         removed_fields = {
             "gamma",
@@ -219,6 +248,56 @@ class OTFlowCoreCleanupTest(unittest.TestCase):
         self.assertEqual(trace["solver"], "dpmpp2m")
         self.assertIn("disagreement", trace)
         self.assertIn("field_evals_by_step", trace)
+
+    def test_sampling_rejects_nonpositive_step_counts(self) -> None:
+        cfg = self._cfg(use_minibatch_ot=False)
+        model = OTFlow(cfg)
+        hist = torch.randn(1, cfg.history_len, cfg.context_dim)
+
+        for requested_steps in (0, -1):
+            with self.subTest(requested_steps=requested_steps):
+                with self.assertRaisesRegex(ValueError, "steps must be positive"):
+                    model.sample_trace(hist, steps=requested_steps)
+
+        cfg.sample.steps = 0
+        with self.assertRaisesRegex(ValueError, "sample.steps must be positive"):
+            model.sample_trace(hist)
+
+    def test_time_grid_rejects_nonfinite_nodes(self) -> None:
+        for invalid_node in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(invalid_node=invalid_node):
+                cfg = self._cfg(use_minibatch_ot=False)
+                cfg.sample.time_grid = (0.0, invalid_node, 1.0)
+                model = OTFlow(cfg)
+                with self.assertRaisesRegex(ValueError, "contain only finite values"):
+                    model._resolved_time_grid(2)
+
+    def test_adaptive_rk_budget_rejects_an_unaffordable_embedded_step(self) -> None:
+        for solver_name, step_name, step_evals in (
+            ("rk45_adaptive", "_rk45_embedded_step", 6),
+            ("dopri5_adaptive", "_dopri5_embedded_step", 7),
+        ):
+            with self.subTest(solver_name=solver_name):
+                cfg = self._cfg(use_minibatch_ot=False)
+                cfg.sample.adaptive_max_nfe = step_evals
+                model = OTFlow(cfg)
+                hist = torch.randn(1, cfg.history_len, cfg.context_dim)
+                observed_evals = 0
+
+                def fake_step(x, t_cur, dt, field_fn, first_eval=None):
+                    nonlocal observed_evals
+                    del t_cur, field_fn, first_eval
+                    observed_evals += step_evals
+                    return x + float(dt), x, step_evals
+
+                model._adaptive_error_norm = lambda *args, **kwargs: 0.5  # type: ignore[method-assign]
+                setattr(model, step_name, fake_step)
+
+                with self.assertRaisesRegex(RuntimeError, "budget cannot fund another full embedded step"):
+                    model.sample_trace(hist, steps=2, solver=solver_name)
+
+                self.assertEqual(observed_evals, step_evals)
+                self.assertLessEqual(observed_evals, cfg.sample.adaptive_max_nfe)
 
     def test_adaptive_rk_trace_time_grid_uses_accepted_steps_only(self) -> None:
         torch.manual_seed(8)

@@ -23,11 +23,11 @@ from diffusion_flow_inference.evaluation.otflow_sampling_support import _choose_
 from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
     ALL_SOLVER_ORDER,
     CONDITIONAL_GENERATION_FAMILY,
-    DEFAULT_CONDITIONAL_GENERATION_DATASETS,
-    DEFAULT_FORECAST_DATASETS,
-    DEFAULT_SHARED_BACKBONE_ROOT,
     FORECAST_FAMILY,
     LOCKED_TEST_PHASE,
+    PAPER_CONDITIONAL_GENERATION_DATASETS,
+    PAPER_FORECAST_DATASETS,
+    SHARED_BACKBONE_ROOT,
     SOLVER_RUNTIME_NAMES,
     UNIFORM_SCHEDULER_KEY,
     VALIDATION_PHASE,
@@ -50,22 +50,22 @@ from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
 from diffusion_flow_inference.schedule_transfer.otflow_paper_registry import METHOD_KEY
 from diffusion_flow_inference.schedule_transfer.otflow_paper_tables import augment_rows_with_relative_metrics
 from diffusion_flow_inference.data.otflow_paths import (
-    default_backbone_manifest_path,
-    default_cryptos_data_path,
-    default_es_mbp_10_data_path,
-    default_sleep_edf_data_path,
+    backbone_manifest_path,
+    cryptos_data_path,
+    es_mbp_10_data_path,
     project_outputs_root,
     project_paper_dataset_root,
     project_root,
     resolve_project_path,
+    sleep_edf_data_path,
 )
 from diffusion_flow_inference.models.otflow_train_val import save_json
 
-RUNNER_SIGNATURE_VERSION = "diffusion_flow_time_reparameterization_v2"
-DEFAULT_OUT_ROOT = project_outputs_root() / "diffusion_flow_time_reparameterization"
-DEFAULT_TARGET_NFE_VALUES: Tuple[int, ...] = (10, 12, 16)
-DEFAULT_SEEDS: Tuple[int, ...] = (0, 1, 2)
-DEFAULT_SCHEDULES: Tuple[str, ...] = BASELINE_SCHEDULE_KEYS
+RUNNER_PROTOCOL = "diffusion_flow_time_reparameterization"
+RUNNER_OUTPUT_ROOT = project_outputs_root() / "diffusion_flow_time_reparameterization"
+RUNNER_TARGET_NFE_VALUES: Tuple[int, ...] = (10, 12, 16)
+RUNNER_SEEDS: Tuple[int, ...] = (0, 1, 2)
+RUNNER_SCHEDULES: Tuple[str, ...] = BASELINE_SCHEDULE_KEYS
 
 ROW_RECORD_FIELDS: Tuple[str, ...] = (
     "benchmark_family",
@@ -203,9 +203,9 @@ def _logical_artifact_path(path: str | Path) -> str:
 
 
 def _data_path_fingerprints(cli_args: argparse.Namespace) -> Dict[str, Any]:
-    cryptos_path = str(cli_args.cryptos_path).strip() or default_cryptos_data_path()
-    es_path = str(cli_args.es_path).strip() or default_es_mbp_10_data_path()
-    sleep_path = str(cli_args.sleep_edf_path).strip() or default_sleep_edf_data_path()
+    cryptos_path = str(cli_args.cryptos_path).strip() or cryptos_data_path()
+    es_path = str(cli_args.es_path).strip() or es_mbp_10_data_path()
+    sleep_path = str(cli_args.sleep_edf_path).strip() or sleep_edf_data_path()
     return {
         "cryptos": _path_fingerprint(cryptos_path),
         "es_mbp_10": _path_fingerprint(es_path),
@@ -237,7 +237,7 @@ def _sanitized_cli_args(cli_args: argparse.Namespace) -> Dict[str, Any]:
 
 def _protocol_config_fingerprint(cli_args: argparse.Namespace) -> str:
     payload = {
-        "runner_signature": RUNNER_SIGNATURE_VERSION,
+        "runner_protocol": RUNNER_PROTOCOL,
         "forecast_datasets": parse_forecast_datasets(str(cli_args.forecast_datasets)),
         "conditional_generation_datasets": parse_conditional_generation_datasets(
             str(cli_args.conditional_generation_datasets)
@@ -322,7 +322,7 @@ def _init_row_recorder(out_root: Path, cli_args: argparse.Namespace) -> Dict[str
     fh = jsonl_path.open("a" if can_resume else "w", encoding="utf-8")
     save_json(
         {
-            "runner_signature": RUNNER_SIGNATURE_VERSION,
+            "runner_protocol": RUNNER_PROTOCOL,
             "method_key": METHOD_KEY,
             "protocol_hash": protocol_hash,
             "args": _sanitized_cli_args(cli_args),
@@ -683,7 +683,7 @@ def _prep_summary(cli_args: argparse.Namespace) -> Dict[str, Any]:
             manifest_summary["missing_count"] = int(payload.get("missing_count", 0))
     return {
         "runner_mode": "diffusion_flow_time_reparameterization",
-        "runner_signature": RUNNER_SIGNATURE_VERSION,
+        "runner_protocol": RUNNER_PROTOCOL,
         "method_key": METHOD_KEY,
         "baseline_schedule_keys": list(BASELINE_SCHEDULE_KEYS),
         "transfer_schedule_keys": list(TRANSFER_SCHEDULE_KEYS),
@@ -701,25 +701,25 @@ def _prep_summary(cli_args: argparse.Namespace) -> Dict[str, Any]:
 
 def build_argparser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Run diffusion-flow time reparameterization fixed-schedule evaluations.")
-    ap.add_argument("--out_root", type=str, default=str(DEFAULT_OUT_ROOT))
+    ap.add_argument("--out_root", type=str, default=str(RUNNER_OUTPUT_ROOT))
     ap.add_argument("--dataset_root", type=str, default=str(project_paper_dataset_root()))
-    ap.add_argument("--shared_backbone_root", type=str, default=str(DEFAULT_SHARED_BACKBONE_ROOT))
-    ap.add_argument("--backbone_manifest", type=str, default=str(default_backbone_manifest_path()))
+    ap.add_argument("--shared_backbone_root", type=str, default=str(SHARED_BACKBONE_ROOT))
+    ap.add_argument("--backbone_manifest", type=str, default=str(backbone_manifest_path()))
     ap.add_argument("--otflow_train_steps", type=int, default=20000)
     ap.add_argument("--steps", type=int, default=0)
-    ap.add_argument("--forecast_datasets", type=str, default=",".join(DEFAULT_FORECAST_DATASETS))
+    ap.add_argument("--forecast_datasets", type=str, default=",".join(PAPER_FORECAST_DATASETS))
     ap.add_argument(
         "--conditional_generation_datasets",
         type=str,
-        default=",".join(DEFAULT_CONDITIONAL_GENERATION_DATASETS),
+        default=",".join(PAPER_CONDITIONAL_GENERATION_DATASETS),
     )
     ap.add_argument("--cryptos_path", type=str, default="")
     ap.add_argument("--es_path", type=str, default="")
     ap.add_argument("--sleep_edf_path", type=str, default="")
     ap.add_argument("--solver_names", type=str, default=",".join(ALL_SOLVER_ORDER))
-    ap.add_argument("--target_nfe_values", type=str, default=",".join(str(x) for x in DEFAULT_TARGET_NFE_VALUES))
-    ap.add_argument("--baseline_scheduler_names", type=str, default=",".join(DEFAULT_SCHEDULES))
-    ap.add_argument("--seeds", type=str, default=",".join(str(x) for x in DEFAULT_SEEDS))
+    ap.add_argument("--target_nfe_values", type=str, default=",".join(str(x) for x in RUNNER_TARGET_NFE_VALUES))
+    ap.add_argument("--baseline_scheduler_names", type=str, default=",".join(RUNNER_SCHEDULES))
+    ap.add_argument("--seeds", type=str, default=",".join(str(x) for x in RUNNER_SEEDS))
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dataset_seed", type=int, default=0)
     ap.add_argument("--num_eval_samples", type=int, default=5)

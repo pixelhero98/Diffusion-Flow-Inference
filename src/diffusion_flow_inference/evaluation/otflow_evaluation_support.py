@@ -6,6 +6,7 @@ import json
 import math
 import os
 import time
+from collections.abc import Mapping as MappingABC
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -13,7 +14,11 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from diffusion_flow_inference.data.experiment_common import DATASET_PLANS, build_dataset_splits, get_otflow_paper_backbone_preset
+from diffusion_flow_inference.data.experiment_common import (
+    DATASET_PLANS,
+    build_dataset_splits,
+    paper_backbone_preset,
+)
 from diffusion_flow_inference.evaluation.fm_backbone_registry import (
     BACKBONE_NAME_OTFLOW,
     build_backbone_checkpoint_id,
@@ -22,19 +27,19 @@ from diffusion_flow_inference.evaluation.fm_backbone_registry import (
     train_budget_label,
 )
 from diffusion_flow_inference.data.otflow_experiment_plan import (
-    CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS,
-    CANONICAL_FORECAST_PAPER_DATASETS,
+    PAPER_CONDITIONAL_GENERATION_DATASETS,
+    PAPER_FORECAST_DATASETS,
     experiment_plan_by_key,
 )
 from diffusion_flow_inference.data.otflow_forecast_data import build_monash_forecast_splits
 from diffusion_flow_inference.data.otflow_medical_datasets import SLEEP_EDF_DATASET_KEY
 from diffusion_flow_inference.models.otflow_model import OTFlow
 from diffusion_flow_inference.data.otflow_paths import (
-    default_cryptos_data_path,
-    default_es_mbp_10_data_path,
-    default_sleep_edf_data_path,
-    project_results_root,
+    cryptos_data_path,
+    es_mbp_10_data_path,
+    project_outputs_root,
     resolve_project_path,
+    sleep_edf_data_path,
 )
 from diffusion_flow_inference.evaluation.otflow_sampling_support import _apply_sample_overrides, _restore_sample_overrides
 from diffusion_flow_inference.schedule_transfer.otflow_schedule_diagnostics import _collect_calibration
@@ -51,52 +56,17 @@ VALIDATION_PHASE = "validation_tuning"
 LOCKED_TEST_PHASE = "locked_test"
 
 UNIFORM_SCHEDULER_KEY = "uniform"
-DEFAULT_SIGNAL_TRACE_KEY = VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY
-DEFAULT_SHARED_BACKBONE_ROOT = (
-    project_results_root() / "shared_backbones" / "otflow_fullhorizon_seed0"
+SIGNAL_TRACE_KEY = VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY
+SHARED_BACKBONE_ROOT = (
+    project_outputs_root() / "shared_backbones" / "otflow_fullhorizon_seed0"
 )
-DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE = "transformer"
-DEFAULT_CONDITIONAL_GENERATION_TRAIN_STEPS = 20_000
+CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE = "transformer"
+CONDITIONAL_GENERATION_TRAIN_STEPS = 20_000
 CONDITIONAL_GENERATION_PHYSICAL_BATCH_SIZE_BY_DATASET: Dict[str, int] = {
     "cryptos": 8,
     "es_mbp_10": 8,
     SLEEP_EDF_DATASET_KEY: 2,
 }
-LEGACY_BASELINE_MODEL_CONFIG_KEYS = {
-    "baseline_latent_dim",
-    "vae_kl_weight",
-    "timegan_supervision_weight",
-    "timegan_moment_weight",
-    "kovae_pred_weight",
-    "kovae_ridge",
-    "gan_noise_dim",
-    "cgan_recon_weight",
-}
-LEGACY_SAMPLE_CONFIG_KEYS = {
-    "adaptive_beta",
-    "adaptive_tau",
-    "adaptive_kappa",
-    "adaptive_gamma_max",
-    "adaptive_cooldown_steps",
-    "adaptive_noise_mode",
-    "adaptive_trigger_mode",
-    "adaptive_disable_noise_frac",
-    "refine_beta",
-    "refine_trigger_mode",
-    "refine_threshold_z",
-    "refine_threshold_raw",
-    "refine_step_mu",
-    "refine_step_sigma",
-    "refine_step_threshold",
-    "refine_selected_steps",
-    "refine_fixed_last_k",
-    "refine_sigma_eps",
-    "refine_disallow_final_step",
-}
-
-DEFAULT_FORECAST_DATASETS = tuple(CANONICAL_FORECAST_PAPER_DATASETS)
-SUPPORTED_FORECAST_DATASETS = tuple(CANONICAL_FORECAST_PAPER_DATASETS)
-DEFAULT_CONDITIONAL_GENERATION_DATASETS = tuple(CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS)
 ALL_SOLVER_ORDER: Tuple[str, ...] = ("euler", "heun", "midpoint_rk2", "dpmpp2m")
 SOLVER_RUNTIME_NAMES: Dict[str, str] = {
     "euler": "euler",
@@ -135,7 +105,7 @@ def parse_float_csv(text: str) -> List[float]:
 
 def parse_forecast_datasets(text: str) -> List[str]:
     names = parse_csv(text)
-    unknown = [name for name in names if name not in SUPPORTED_FORECAST_DATASETS]
+    unknown = [name for name in names if name not in PAPER_FORECAST_DATASETS]
     if unknown:
         raise ValueError(f"Unknown forecast datasets: {unknown}")
     return names
@@ -143,7 +113,7 @@ def parse_forecast_datasets(text: str) -> List[str]:
 
 def parse_conditional_generation_datasets(text: str) -> List[str]:
     names = parse_csv(text)
-    unknown = [name for name in names if name not in DEFAULT_CONDITIONAL_GENERATION_DATASETS]
+    unknown = [name for name in names if name not in PAPER_CONDITIONAL_GENERATION_DATASETS]
     if unknown:
         raise ValueError(f"Unknown conditional-generation datasets: {unknown}")
     return names
@@ -300,7 +270,7 @@ def _missing_shared_checkpoint_paths(
             shared_backbone_root
             / "conditional_generation"
             / str(dataset)
-            / DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+            / CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
             / "model.pt"
         )
         if not ckpt_path.exists():
@@ -407,32 +377,32 @@ def safe_spearman(x: Sequence[float], y: Sequence[float]) -> float:
 
 def _resolved_conditional_generation_physical_batch_size(dataset: str) -> int:
     dataset_key = str(dataset)
-    default_value = int(CONDITIONAL_GENERATION_PHYSICAL_BATCH_SIZE_BY_DATASET[dataset_key])
+    configured_batch_size = int(CONDITIONAL_GENERATION_PHYSICAL_BATCH_SIZE_BY_DATASET[dataset_key])
     if dataset_key != SLEEP_EDF_DATASET_KEY:
-        return default_value
+        return configured_batch_size
     raw = str(os.environ.get("OTFLOW_SLEEP_EDF_PHYSICAL_BATCH_SIZE", "") or "").strip()
     if not raw:
-        return default_value
+        return configured_batch_size
     try:
         override = int(raw)
     except ValueError:
-        return default_value
+        return configured_batch_size
     return max(1, int(override))
 
 
-def _dataset_data_path(cli_args: argparse.Namespace, dataset: str) -> str:
+def _conditional_generation_data_path(cli_args: argparse.Namespace, dataset: str) -> str:
     if str(dataset) == "cryptos":
-        return str(getattr(cli_args, "cryptos_path", "") or default_cryptos_data_path())
+        return str(getattr(cli_args, "cryptos_path", "") or cryptos_data_path())
     if str(dataset) == "es_mbp_10":
-        return str(getattr(cli_args, "es_path", "") or default_es_mbp_10_data_path())
+        return str(getattr(cli_args, "es_path", "") or es_mbp_10_data_path())
     if str(dataset) == SLEEP_EDF_DATASET_KEY:
-        return str(getattr(cli_args, "sleep_edf_path", "") or default_sleep_edf_data_path())
+        return str(getattr(cli_args, "sleep_edf_path", "") or sleep_edf_data_path())
     raise ValueError(f"Unknown conditional-generation dataset: {dataset}")
 
 
 def resolved_train_steps(cli_args: argparse.Namespace, dataset: str) -> int:
     del dataset
-    return int(cli_args.steps) if int(cli_args.steps) > 0 else int(DEFAULT_CONDITIONAL_GENERATION_TRAIN_STEPS)
+    return int(cli_args.steps) if int(cli_args.steps) > 0 else int(CONDITIONAL_GENERATION_TRAIN_STEPS)
 
 
 def resolved_eval_horizon(cli_args: argparse.Namespace, dataset: str) -> int:
@@ -441,12 +411,13 @@ def resolved_eval_horizon(cli_args: argparse.Namespace, dataset: str) -> int:
 
 
 def resolved_eval_windows(cli_args: argparse.Namespace, dataset: str, split: str) -> int:
-    assert split in {"val", "test"}
+    if split not in {"val", "test"}:
+        raise ValueError(f"Unsupported evaluation split={split!r}.")
     raw = int(cli_args.eval_windows_val if split == "val" else cli_args.eval_windows_test)
     if raw > 0:
         return raw
     plan = DATASET_PLANS[str(dataset)]
-    return int(plan.eval_windows_final)
+    return int(plan.evaluation_windows)
 
 
 def build_conditional_generation_dataset_args_from_cfg(
@@ -457,7 +428,7 @@ def build_conditional_generation_dataset_args_from_cfg(
 ) -> argparse.Namespace:
     plan = DATASET_PLANS[str(dataset)]
     experiment_spec = experiment_plan_by_key()[str(dataset)]
-    preset = get_otflow_paper_backbone_preset(str(dataset))
+    preset = paper_backbone_preset(str(dataset))
     batch_size = int(_resolved_conditional_generation_physical_batch_size(str(dataset)))
     grad_accum_steps = max(1, int(math.ceil(32.0 / float(max(1, batch_size)))))
     locked_future_block_len = (
@@ -468,16 +439,15 @@ def build_conditional_generation_dataset_args_from_cfg(
     locked_history_len = int(experiment_spec.history_len)
     args = argparse.Namespace(
         dataset=str(dataset),
-        data_path=_dataset_data_path(cli_args, str(dataset)),
-        synthetic_length=int(plan.synthetic_length),
+        data_path=_conditional_generation_data_path(cli_args, str(dataset)),
         seed=int(cli_args.dataset_seed),
         device=str(cli_args.device),
         steps=int(resolved_train_steps(cli_args, str(dataset))),
-        train_frac=plan.train_frac,
-        val_frac=plan.val_frac,
-        test_frac=plan.test_frac,
-        stride_train=plan.stride_train,
-        stride_eval=plan.stride_eval,
+        train_frac=plan.train_fraction,
+        val_frac=plan.validation_fraction,
+        test_frac=plan.test_fraction,
+        stride_train=plan.training_stride,
+        stride_eval=plan.evaluation_stride,
         levels=int(preset["levels"]),
         token_dim=int(preset.get("token_dim", 4)),
         history_len=int(locked_history_len),
@@ -548,8 +518,39 @@ def build_conditional_generation_dataset_args_from_cfg(
 def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow, Any]:
     from diffusion_flow_inference.models.config import OTFlowConfig
 
-    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
-    cfg_dict = ckpt["cfg"]
+    checkpoint = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
+    if not isinstance(checkpoint, MappingABC):
+        raise TypeError("Checkpoint must be a mapping with 'cfg' and 'model_state' entries.")
+
+    required_checkpoint_keys = {"cfg", "model_state"}
+    checkpoint_keys = set(checkpoint)
+    missing_checkpoint_keys = required_checkpoint_keys - checkpoint_keys
+    unsupported_checkpoint_keys = checkpoint_keys - required_checkpoint_keys
+    if missing_checkpoint_keys or unsupported_checkpoint_keys:
+        details: List[str] = []
+        if missing_checkpoint_keys:
+            details.append(f"missing={sorted(missing_checkpoint_keys)}")
+        if unsupported_checkpoint_keys:
+            details.append(f"unsupported={sorted(map(str, unsupported_checkpoint_keys))}")
+        raise TypeError("Checkpoint has invalid top-level keys: " + ", ".join(details))
+
+    cfg_dict = checkpoint["cfg"]
+    if not isinstance(cfg_dict, MappingABC):
+        raise TypeError("Checkpoint 'cfg' must be a mapping.")
+    model_state_payload = checkpoint["model_state"]
+    if not isinstance(model_state_payload, MappingABC):
+        raise TypeError("Checkpoint 'model_state' must be a mapping of parameter names to tensors.")
+    invalid_state_entries = [
+        str(name)
+        for name, value in model_state_payload.items()
+        if not isinstance(name, str) or not isinstance(value, torch.Tensor)
+    ]
+    if invalid_state_entries:
+        raise TypeError(
+            "Checkpoint 'model_state' must map string parameter names to tensors; "
+            f"invalid entries: {sorted(invalid_state_entries)}"
+        )
+
     cfg = OTFlowConfig()
     section_types = {
         "data": type(cfg.data),
@@ -558,17 +559,23 @@ def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow
         "train": type(cfg.train),
         "sample": type(cfg.sample),
     }
+    required_sections = set(section_types)
+    config_sections = set(cfg_dict)
+    missing_sections = required_sections - config_sections
+    unsupported_sections = config_sections - required_sections
+    if missing_sections or unsupported_sections:
+        details = []
+        if missing_sections:
+            details.append(f"missing={sorted(missing_sections)}")
+        if unsupported_sections:
+            details.append(f"unsupported={sorted(map(str, unsupported_sections))}")
+        raise TypeError("Checkpoint cfg has invalid sections: " + ", ".join(details))
+
     for section_name, cls in section_types.items():
         section_values = {field.name: getattr(getattr(cfg, section_name), field.name) for field in fields(cls)}
-        checkpoint_values = dict(cfg_dict.get(section_name, {}))
-        if section_name == "model":
-            checkpoint_values = {
-                key: value for key, value in checkpoint_values.items() if key not in LEGACY_BASELINE_MODEL_CONFIG_KEYS
-            }
-        if section_name == "sample":
-            checkpoint_values = {
-                key: value for key, value in checkpoint_values.items() if key not in LEGACY_SAMPLE_CONFIG_KEYS
-            }
+        checkpoint_values = cfg_dict[section_name]
+        if not isinstance(checkpoint_values, MappingABC):
+            raise TypeError(f"Checkpoint cfg section {section_name!r} must be a mapping.")
         section_values.update(checkpoint_values)
         if section_name == "train":
             section_values["device"] = device
@@ -582,7 +589,7 @@ def load_checkpoint_model(ckpt_path: Path, device: torch.device) -> Tuple[OTFlow
     cfg.train.device = device
 
     model = OTFlow(cfg).to(device)
-    model_state = dict(ckpt["model_state"])
+    model_state = dict(model_state_payload)
     load_result = model.load_state_dict(model_state, strict=True)
     if load_result.missing_keys or load_result.unexpected_keys:
         raise RuntimeError(
@@ -715,7 +722,7 @@ def _validate_conditional_generation_checkpoint_task(
         expected_train_steps=int(expected_train_steps),
         expected_history_len=int(expected_history_len),
         expected_future_block_len=int(expected_future_block_len),
-        expected_field_network_type=DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE,
+        expected_field_network_type=CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE,
     )
     metadata_cond_dim = _metadata_split_cond_dim(metadata)
     if int(checkpoint_model_cond_dim) != int(metadata_cond_dim):
@@ -854,7 +861,7 @@ def load_conditional_generation_checkpoint_splits(
             shared_backbone_root
             / "conditional_generation"
             / str(dataset)
-            / DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+            / CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
             / "model.pt"
         )
         metadata = (
@@ -862,7 +869,7 @@ def load_conditional_generation_checkpoint_splits(
                 shared_backbone_root
                 / "conditional_generation"
                 / str(dataset)
-                / DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+                / CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
                 / "checkpoint_metadata.json"
             )
             or {}
@@ -876,7 +883,7 @@ def load_conditional_generation_checkpoint_splits(
                 benchmark_family=CONDITIONAL_GENERATION_FAMILY,
                 dataset_key=str(dataset),
                 train_steps=resolved_train_steps,
-                field_network_type=DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE,
+                field_network_type=CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE,
             )
         )
         backbone_name = BACKBONE_NAME_OTFLOW
@@ -904,7 +911,7 @@ def load_conditional_generation_checkpoint_splits(
     dataset_args = build_conditional_generation_dataset_args_from_cfg(
         cli_args,
         str(dataset),
-        DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE,
+        CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE,
         cfg,
     )
     splits = build_dataset_splits(dataset_args, cfg)
@@ -1050,16 +1057,15 @@ __all__ = [
     "ALL_SOLVER_ORDER",
     "CONDITIONAL_GENERATION_FAMILY",
     "CONDITIONAL_GENERATION_PHYSICAL_BATCH_SIZE_BY_DATASET",
-    "DEFAULT_CONDITIONAL_GENERATION_TRAIN_STEPS",
-    "DEFAULT_CONDITIONAL_GENERATION_DATASETS",
-    "DEFAULT_CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE",
-    "DEFAULT_FORECAST_DATASETS",
-    "DEFAULT_SHARED_BACKBONE_ROOT",
-    "DEFAULT_SIGNAL_TRACE_KEY",
+    "CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE",
+    "CONDITIONAL_GENERATION_TRAIN_STEPS",
     "FORECAST_FAMILY",
     "LOCKED_TEST_PHASE",
     "SOLVER_RUNTIME_NAMES",
-    "SUPPORTED_FORECAST_DATASETS",
+    "PAPER_CONDITIONAL_GENERATION_DATASETS",
+    "PAPER_FORECAST_DATASETS",
+    "SHARED_BACKBONE_ROOT",
+    "SIGNAL_TRACE_KEY",
     "UNIFORM_SCHEDULER_KEY",
     "VALIDATION_PHASE",
     "collect_forecast_calibration",

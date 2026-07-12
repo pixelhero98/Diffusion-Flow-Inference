@@ -15,13 +15,13 @@ Diffusion-Flow-Inference evaluates fixed schedules after mapping them onto norma
 
 This repository is source-only. Local runs may use `data/`, `paper_datasets/`, `outputs/`, and `.venv/`, but those large or machine-local directories are intentionally ignored and are not part of the public source tree.
 
-Generated outputs default to:
+Generated outputs are written to:
 
 ```text
 outputs/
 ```
 
-The default backbone manifest path is:
+The backbone manifest path is:
 
 ```text
 outputs/backbone_matrix/backbone_manifest.json
@@ -35,6 +35,12 @@ Install the package in editable mode:
 
 ```bash
 python -m pip install -e .
+```
+
+For development and validation, install the test extra:
+
+```bash
+python -m pip install -e ".[test]"
 ```
 
 Or install runtime dependencies directly:
@@ -51,15 +57,26 @@ conda env create -f environment.conda.yml
 
 Raw medical dataset preparation requires `OTFLOW_MEDICAL_STAGING_ROOT` to point at the local staging directory. Prepared dataset evaluation uses the processed files in `data/`.
 
-## CPU Smoke Checks
+## Validation Checks
 
 ```bash
-CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src tests scripts
-CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
+python -m compileall -q src tests scripts
+python -m pytest -q
+python -m pip check
+```
+
+## Command-Line Tools
+
+Inspect the installed command-line interfaces with:
+
+```bash
+dfi-run-schedules --help
+dfi-build-velocity-variation-figure --help
+dfi-build-ptg-figure --help
 ```
 
 Dry-run prep from the repository root accepts project-relative paths:
 
 ```bash
-CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 dfi-run-schedules --forecast_datasets '' --conditional_generation_datasets '' --backbone_manifest outputs/backbone_matrix/backbone_manifest.json
+dfi-run-schedules --forecast_datasets '' --conditional_generation_datasets '' --backbone_manifest outputs/backbone_matrix/backbone_manifest.json
 ```

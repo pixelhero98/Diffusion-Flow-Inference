@@ -258,8 +258,8 @@ class BackboneMatrixTests(unittest.TestCase):
                 "train_budget_label": "20k",
                 "target_nfe": 10,
                 "solver_key": "euler",
-                "schedule_name": "uniform",
-                "crps": 5.0,
+                "scheduler_key": "uniform",
+                "crps_mean": 5.0,
                 "experiment_scope": "main",
             },
             {
@@ -272,8 +272,8 @@ class BackboneMatrixTests(unittest.TestCase):
                 "train_budget_label": "4k",
                 "target_nfe": 10,
                 "solver_key": "euler",
-                "schedule_name": "flowts_power_sampling",
-                "crps": 3.0,
+                "scheduler_key": "flowts_power_sampling",
+                "crps_mean": 3.0,
                 "experiment_scope": "main",
             },
             {
@@ -286,14 +286,14 @@ class BackboneMatrixTests(unittest.TestCase):
                 "train_budget_label": "4k",
                 "target_nfe": 10,
                 "solver_key": "euler",
-                "schedule_name": "uniform",
-                "crps": 4.0,
+                "scheduler_key": "uniform",
+                "crps_mean": 4.0,
                 "experiment_scope": "main",
             },
         ]
         enriched = augment_rows_with_relative_metrics(rows)
         by_schedule = {
-            (row["train_steps"], row["schedule_name"]): row for row in enriched
+            (row["train_steps"], row["scheduler_key"]): row for row in enriched
         }
         self.assertIsNone(by_schedule[(4000, "flowts_power_sampling")]["relative_score_gain_vs_uniform"])
         self.assertAlmostEqual(
@@ -302,38 +302,26 @@ class BackboneMatrixTests(unittest.TestCase):
             places=8,
         )
 
-    def test_conditional_generation_relative_metrics_preserve_seed_paired_gain(self) -> None:
+    def test_conditional_generation_summary_preserves_seed_paired_gain(self) -> None:
         rows = [
             {
                 "benchmark_family": CONDITIONAL_GENERATION_FAMILY,
-                "split_phase": "locked_test",
                 "dataset": "cryptos",
-                "backbone_name": "otflow",
-                "checkpoint_id": "shared",
-                "train_steps": 20000,
                 "train_budget_label": "20k",
                 "target_nfe": 10,
                 "solver_key": "euler",
                 "scheduler_key": "uniform",
-                "seed": 0,
-                "score_main": 10.0,
-                "experiment_scope": "main",
+                "score_main_mean": 10.0,
             },
             {
                 "benchmark_family": CONDITIONAL_GENERATION_FAMILY,
-                "split_phase": "locked_test",
                 "dataset": "cryptos",
-                "backbone_name": "otflow",
-                "checkpoint_id": "shared",
-                "train_steps": 20000,
                 "train_budget_label": "20k",
                 "target_nfe": 10,
                 "solver_key": "euler",
                 "scheduler_key": "ays",
-                "seed": 0,
-                "score_main": 8.0,
-                "relative_score_gain_vs_uniform": -0.125,
-                "experiment_scope": "main",
+                "score_main_mean": 8.0,
+                "relative_score_gain_vs_uniform_mean": -0.125,
             },
         ]
 

@@ -109,15 +109,11 @@ PAPER_EXPERIMENT_SPECS: tuple[DatasetExperimentSpec, ...] = (
     ),
 )
 
-CANONICAL_FORECAST_PAPER_DATASETS: tuple[str, ...] = tuple(
+PAPER_FORECAST_DATASETS: tuple[str, ...] = tuple(
     spec.dataset_key for spec in PAPER_EXPERIMENT_SPECS if spec.benchmark_family == FORECAST_FAMILY
 )
-CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS: tuple[str, ...] = tuple(
+PAPER_CONDITIONAL_GENERATION_DATASETS: tuple[str, ...] = tuple(
     spec.dataset_key for spec in PAPER_EXPERIMENT_SPECS if spec.benchmark_family == CONDITIONAL_GENERATION_FAMILY
-)
-CHECKPOINT_READY_FORECAST_DATASETS: tuple[str, ...] = tuple(CANONICAL_FORECAST_PAPER_DATASETS)
-CHECKPOINT_READY_CONDITIONAL_GENERATION_DATASETS: tuple[str, ...] = tuple(
-    CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS
 )
 
 
@@ -127,22 +123,6 @@ def experiment_plan_specs() -> List[DatasetExperimentSpec]:
 
 def experiment_plan_by_key() -> Dict[str, DatasetExperimentSpec]:
     return {spec.dataset_key: spec for spec in PAPER_EXPERIMENT_SPECS}
-
-
-def canonical_forecast_paper_dataset_keys() -> tuple[str, ...]:
-    return tuple(CANONICAL_FORECAST_PAPER_DATASETS)
-
-
-def canonical_conditional_generation_paper_dataset_keys() -> tuple[str, ...]:
-    return tuple(CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS)
-
-
-def checkpoint_ready_forecast_dataset_keys() -> tuple[str, ...]:
-    return tuple(CHECKPOINT_READY_FORECAST_DATASETS)
-
-
-def checkpoint_ready_conditional_generation_dataset_keys() -> tuple[str, ...]:
-    return tuple(CHECKPOINT_READY_CONDITIONAL_GENERATION_DATASETS)
 
 
 def validate_experiment_plan(specs: Iterable[DatasetExperimentSpec] | None = None) -> List[Dict[str, object]]:
@@ -181,17 +161,11 @@ def write_experiment_plan(out_root: str | Path) -> Mapping[str, object]:
 
 __all__ = [
     "CONDITIONAL_GENERATION_FAMILY",
-    "CANONICAL_FORECAST_PAPER_DATASETS",
-    "CANONICAL_CONDITIONAL_GENERATION_PAPER_DATASETS",
-    "CHECKPOINT_READY_FORECAST_DATASETS",
-    "CHECKPOINT_READY_CONDITIONAL_GENERATION_DATASETS",
     "DatasetExperimentSpec",
     "FORECAST_FAMILY",
+    "PAPER_CONDITIONAL_GENERATION_DATASETS",
     "PAPER_EXPERIMENT_SPECS",
-    "canonical_forecast_paper_dataset_keys",
-    "canonical_conditional_generation_paper_dataset_keys",
-    "checkpoint_ready_forecast_dataset_keys",
-    "checkpoint_ready_conditional_generation_dataset_keys",
+    "PAPER_FORECAST_DATASETS",
     "experiment_plan_by_key",
     "experiment_plan_specs",
     "validate_experiment_plan",

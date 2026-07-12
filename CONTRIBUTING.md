@@ -7,8 +7,10 @@ paths.
 Before opening a change, run:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python -m compileall -q src tests scripts
-PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py'
+python -m pip install -e ".[test]"
+python -m compileall -q src tests scripts
+python -m pytest -q
+python -m pip check
 ```
 
 Keep compatibility branches and historical result-reuse logic out of active

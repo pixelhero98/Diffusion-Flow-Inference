@@ -25,6 +25,6 @@
     "source_url": "https://github.com/scxue/DM-NonUniform",
     "paper_url": "https://arxiv.org/pdf/2402.17376.pdf",
     "mapping_status": "implemented",
-    "notes": "Mapped with a lightweight deterministic optimizer derived from the official OTS objective, producing canonical OTFlow time grids for NFE 10, 12, and 16."
+    "notes": "Mapped with a lightweight deterministic optimizer derived from the official OTS objective, producing resolved OTFlow time grids for NFE 10, 12, and 16."
   }
 }

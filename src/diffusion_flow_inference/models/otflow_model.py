@@ -181,16 +181,6 @@ class OTFlow(RectifiedFlow):
 
     def _resolve_solver_name(self, solver: Optional[str]) -> str:
         solver_name = str(getattr(self.cfg.sample, "solver", "euler") if solver is None else solver).lower().strip()
-        if solver_name in {"dpmpp_2m", "dpm++", "dpm++2m"}:
-            solver_name = "dpmpp2m"
-        if solver_name in {"dormand_prince", "dormand-prince", "dormand_prince_45", "dopri5"}:
-            solver_name = "dopri5"
-        if solver_name in {"dopri5_adapt", "dopri5-adaptive", "dormand_prince_adaptive", "dormand-prince-adaptive"}:
-            solver_name = "dopri5_adaptive"
-        if solver_name in {"runge_kutta45", "runge-kutta45", "rk_45"}:
-            solver_name = "rk45"
-        if solver_name in {"rk45_adapt", "rk45-adaptive", "runge_kutta45_adaptive", "runge-kutta45-adaptive"}:
-            solver_name = "rk45_adaptive"
         if solver_name not in {
             "euler",
             "dpmpp2m",
@@ -238,6 +228,8 @@ class OTFlow(RectifiedFlow):
             raise ValueError(
                 f"sample.time_grid must have length n_steps + 1 ({int(n_steps) + 1}), got {len(raw_grid)}."
             )
+        if not all(math.isfinite(node) for node in raw_grid):
+            raise ValueError("sample.time_grid must contain only finite values.")
         if abs(float(raw_grid[0])) > 1e-8 or abs(float(raw_grid[-1]) - 1.0) > 1e-8:
             raise ValueError("sample.time_grid must start at 0.0 and end at 1.0.")
         for left, right in zip(raw_grid, raw_grid[1:]):
@@ -461,11 +453,14 @@ class OTFlow(RectifiedFlow):
         state_dim = self._sample_state_dim()
         x = torch.randn(batch_size, state_dim, device=hist.device)
 
-        default_steps = int(self.cfg.sample.steps)
-        n_steps = int(max(1, default_steps if steps is None else steps))
+        configured_step_count = int(self.cfg.sample.steps)
+        n_steps = int(configured_step_count if steps is None else steps)
+        if n_steps <= 0:
+            source_name = "sample.steps" if steps is None else "steps"
+            raise ValueError(f"{source_name} must be positive, got {n_steps}.")
 
-        default_cfg_scale = float(self.cfg.sample.cfg_scale)
-        guidance = float(default_cfg_scale if cfg_scale is None else cfg_scale)
+        configured_guidance_scale = float(self.cfg.sample.cfg_scale)
+        guidance = float(configured_guidance_scale if cfg_scale is None else cfg_scale)
         solver_name = self._resolve_solver_name(solver)
         time_grid = self._resolved_time_grid(n_steps)
         prev_u: Optional[torch.Tensor] = None
@@ -510,9 +505,8 @@ class OTFlow(RectifiedFlow):
             total_evals = 0
             accepted_steps = 0
             rejected_steps = 0
-            hit_max_nfe = False
             t_cur = 0.0
-            dt = 1.0 / float(max(int(n_steps), 1))
+            dt = 1.0 / float(n_steps)
             min_step = float(rk_cfg["min_step"])
             max_nfe = int(rk_cfg["max_nfe"])
             trial_times: List[float] = []
@@ -532,6 +526,15 @@ class OTFlow(RectifiedFlow):
                 dt = min(float(dt), 1.0 - float(t_cur))
                 if dt <= min_step:
                     dt = min(min_step, 1.0 - float(t_cur))
+                required_evals = 6 if solver_name == "rk45_adaptive" else 7
+                if first_eval is not None:
+                    required_evals -= 1
+                if total_evals + required_evals > max_nfe:
+                    raise RuntimeError(
+                        "adaptive_max_nfe budget cannot fund another full embedded step: "
+                        f"total_field_evals={total_evals}, required_field_evals={required_evals}, "
+                        f"adaptive_max_nfe={max_nfe}."
+                    )
                 x_high, x_low, evals = step_fn(x, float(t_cur), float(dt), _guided_field_at, first_eval=first_eval)
                 total_evals += int(evals)
                 error_norm = self._adaptive_error_norm(
@@ -541,7 +544,7 @@ class OTFlow(RectifiedFlow):
                     rtol=float(rk_cfg["rtol"]),
                     atol=float(rk_cfg["atol"]),
                 )
-                force_accept = bool(dt <= min_step * (1.0 + 1e-9) or total_evals >= max_nfe)
+                force_accept = bool(dt <= min_step * (1.0 + 1e-9))
                 accepted = bool(error_norm <= 1.0 or force_accept)
                 trial_times.append(float(t_cur))
                 trial_dts.append(float(dt))
@@ -564,26 +567,6 @@ class OTFlow(RectifiedFlow):
                     rejected_steps += 1
                     first_eval = None
                     dt = max(min_step, float(dt) * factor)
-                if total_evals >= max_nfe and t_cur < 1.0 - 1e-12:
-                    hit_max_nfe = True
-                    remaining_dt = 1.0 - float(t_cur)
-                    x_high, _, evals = step_fn(x, float(t_cur), float(remaining_dt), _guided_field_at, first_eval=None)
-                    x = x_high
-                    total_evals += int(evals)
-                    accepted_steps += 1
-                    trial_times.append(float(t_cur))
-                    trial_dts.append(float(remaining_dt))
-                    trial_errors.append(float("nan"))
-                    trial_accepted.append(True)
-                    trial_evals.append(int(evals))
-                    accepted_start_times.append(float(t_cur))
-                    accepted_dts.append(float(remaining_dt))
-                    accepted_errors.append(float("nan"))
-                    accepted_evals.append(int(evals))
-                    t_cur = 1.0
-                    accepted_time_grid.append(float(t_cur))
-                    break
-
             self._last_sample_stats = {
                 "solver": solver_name,
                 "steps": int(n_steps),
@@ -597,7 +580,7 @@ class OTFlow(RectifiedFlow):
                 "trial_steps": int(len(trial_evals)),
                 "total_field_evals": int(total_evals),
                 "mean_total_field_evals_per_rollout": float(total_evals),
-                "hit_max_nfe": bool(hit_max_nfe),
+                "hit_max_nfe": bool(total_evals >= max_nfe),
             }
             if not record_trace:
                 return x, None
@@ -623,7 +606,7 @@ class OTFlow(RectifiedFlow):
                 "trial_field_evals_by_step": trial_evals_t,
                 "accepted_steps": int(accepted_steps),
                 "rejected_steps": int(rejected_steps),
-                "hit_max_nfe": bool(hit_max_nfe),
+                "hit_max_nfe": bool(total_evals >= max_nfe),
                 "rtol": float(rk_cfg["rtol"]),
                 "atol": float(rk_cfg["atol"]),
             }

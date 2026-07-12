@@ -122,31 +122,23 @@ def get_monash_dataset_spec(dataset_key: str) -> MonashDatasetSpec:
     raise KeyError(f"Unknown Monash paper dataset: {dataset_key}")
 
 
-def default_manifest_path(dataset_root: str | Path, dataset_key: str) -> Path:
+def monash_manifest_path(dataset_root: str | Path, dataset_key: str) -> Path:
     spec = get_monash_dataset_spec(dataset_key)
     return Path(dataset_root).resolve() / spec.data_subdir / "manifest.json"
 
 
-def default_dataset_dir(dataset_root: str | Path, dataset_key: str) -> Path:
+def monash_dataset_dir(dataset_root: str | Path, dataset_key: str) -> Path:
     spec = get_monash_dataset_spec(dataset_key)
     return Path(dataset_root).resolve() / spec.data_subdir
 
 
-def default_raw_dir(dataset_root: str | Path, dataset_key: str) -> Path:
-    return default_dataset_dir(dataset_root, dataset_key) / "raw"
+def monash_source_dir(dataset_root: str | Path, dataset_key: str) -> Path:
+    return monash_dataset_dir(dataset_root, dataset_key) / "source"
 
 
-def default_source_dir(dataset_root: str | Path, dataset_key: str) -> Path:
-    return default_dataset_dir(dataset_root, dataset_key) / "source"
-
-
-def default_audit_path(dataset_root: str | Path, dataset_key: str) -> Path:
-    return default_dataset_dir(dataset_root, dataset_key) / "audit.json"
-
-
-def default_archive_path(dataset_root: str | Path, dataset_key: str) -> Path:
+def monash_archive_path(dataset_root: str | Path, dataset_key: str) -> Path:
     spec = get_monash_dataset_spec(dataset_key)
-    return default_raw_dir(dataset_root, dataset_key) / spec.archive_name
+    return monash_dataset_dir(dataset_root, dataset_key) / "raw" / spec.archive_name
 
 
 def _sha256_file(path: str | Path) -> str:
@@ -255,7 +247,7 @@ def iter_tsf_series(tsf_path: str | Path) -> Iterator[Tuple[int, Dict[str, str],
             yield int(line_number), metadata, series_values
 
 
-def _default_context_length(official_horizon: int, min_series_length: int) -> int:
+def _context_length_for_horizon(official_horizon: int, min_series_length: int) -> int:
     horizon = int(official_horizon)
     max_allowed = max(1, int(min_series_length) - 2 * int(horizon))
     return int(max(4, min(max_allowed, max(4 * horizon, 64))))
@@ -263,10 +255,8 @@ def _default_context_length(official_horizon: int, min_series_length: int) -> in
 
 def download_monash_dataset(dataset_root: str | Path, dataset_key: str) -> Dict[str, Any]:
     spec = get_monash_dataset_spec(dataset_key)
-    dataset_dir = default_dataset_dir(dataset_root, dataset_key)
-    raw_dir = default_raw_dir(dataset_root, dataset_key)
-    source_dir = default_source_dir(dataset_root, dataset_key)
-    archive_path = default_archive_path(dataset_root, dataset_key)
+    source_dir = monash_source_dir(dataset_root, dataset_key)
+    archive_path = monash_archive_path(dataset_root, dataset_key)
     if not archive_path.exists():
         _download_file(spec.download_url, archive_path)
     if not any(source_dir.rglob("*.tsf")):
@@ -296,7 +286,7 @@ def download_monash_dataset(dataset_root: str | Path, dataset_key: str) -> Dict[
         "dataset_key": spec.key,
         "display_name": spec.display_name,
         "official_horizon": int(official_horizon),
-        "context_length": int(_default_context_length(int(official_horizon), int(min_series_length))),
+        "context_length": int(_context_length_for_horizon(int(official_horizon), int(min_series_length))),
         "frequency": str(header.frequency or spec.source_frequency_label),
         "n_series": int(n_series),
         "min_series_length": int(min_series_length),
@@ -316,7 +306,7 @@ def download_monash_dataset(dataset_root: str | Path, dataset_key: str) -> Dict[
         "missing_header": bool(header.missing),
         "context_length_policy": "4xhorizon_clipped_to_min_length",
     }
-    default_manifest_path(dataset_root, dataset_key).write_text(
+    monash_manifest_path(dataset_root, dataset_key).write_text(
         json.dumps(manifest_payload, indent=2),
         encoding="utf-8",
     )
@@ -370,7 +360,7 @@ def build_single_tail_holdout_plan(
 
 def dataset_prep_stub(dataset_root: str | Path, dataset_key: str) -> Dict[str, Any]:
     spec = get_monash_dataset_spec(dataset_key)
-    manifest_path = default_manifest_path(dataset_root, dataset_key)
+    manifest_path = monash_manifest_path(dataset_root, dataset_key)
     status = "ready" if manifest_path.exists() else "missing_manifest"
     manifest_payload = None
     holdout_plan = None
@@ -406,13 +396,7 @@ __all__ = [
     "TsfHeader",
     "all_dataset_prep_stubs",
     "build_single_tail_holdout_plan",
-    "default_archive_path",
-    "default_audit_path",
-    "default_dataset_dir",
     "dataset_prep_stub",
-    "default_manifest_path",
-    "default_raw_dir",
-    "default_source_dir",
     "download_monash_dataset",
     "download_monash_paper_datasets",
     "find_tsf_file",
@@ -420,5 +404,9 @@ __all__ = [
     "iter_tsf_series",
     "load_monash_manifest",
     "monash_paper_dataset_keys",
+    "monash_archive_path",
+    "monash_dataset_dir",
+    "monash_manifest_path",
+    "monash_source_dir",
     "parse_tsf_header",
 ]

@@ -16,23 +16,23 @@ import numpy as np
 from diffusion_flow_inference.data.otflow_paths import project_root
 
 PROJECT_ROOT = project_root()
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "outputs"
-DEFAULT_RESULTS_DIR = DEFAULT_OUTPUT_ROOT / "ptg_observed_gain"
-DEFAULT_INPUT_JSON = DEFAULT_RESULTS_DIR / "ptg_observed_gain_inputs.json"
-DEFAULT_POINTS_CSV = DEFAULT_RESULTS_DIR / "ptg_observed_gain_points.csv"
-DEFAULT_DIAGNOSTICS_JSON = DEFAULT_RESULTS_DIR / "ptg_diagnostics.json"
-DEFAULT_INTEGRATION_ROWS_CSV = DEFAULT_RESULTS_DIR / "ptg_integration_error_rows.csv"
-DEFAULT_INTEGRATION_SEED_STATS_CSV = DEFAULT_RESULTS_DIR / "ptg_integration_error_seed_stats.csv"
-DEFAULT_FIGURE_DIR = DEFAULT_OUTPUT_ROOT / "figures"
-DEFAULT_PNG = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.png"
-DEFAULT_PDF = DEFAULT_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.pdf"
+PTG_OUTPUT_ROOT = PROJECT_ROOT / "outputs"
+PTG_RESULTS_DIR = PTG_OUTPUT_ROOT / "ptg_observed_gain"
+PTG_INPUT_JSON_PATH = PTG_RESULTS_DIR / "ptg_observed_gain_inputs.json"
+PTG_POINTS_CSV_PATH = PTG_RESULTS_DIR / "ptg_observed_gain_points.csv"
+PTG_DIAGNOSTICS_JSON_PATH = PTG_RESULTS_DIR / "ptg_diagnostics.json"
+PTG_INTEGRATION_ERROR_ROWS_CSV_PATH = PTG_RESULTS_DIR / "ptg_integration_error_rows.csv"
+PTG_INTEGRATION_ERROR_SEED_STATS_CSV_PATH = PTG_RESULTS_DIR / "ptg_integration_error_seed_stats.csv"
+PTG_FIGURE_DIR = PTG_OUTPUT_ROOT / "figures"
+PTG_FIGURE_PNG_PATH = PTG_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.png"
+PTG_FIGURE_PDF_PATH = PTG_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.pdf"
 
 VELOCITY_VARIATION_SIGNAL_TRACE_KEY = "velocity_variation_difficulty_by_step"
 ORACLE_LOCAL_ERROR_TRACE_KEY = "oracle_local_error_by_step"
 LOCAL_DEFECT_TRACE_KEY = "validation_local_defect_trace"
 VELOCITY_VARIATION_TRACE_KEY = "validation_velocity_variation_difficulty_trace"
-DEFAULT_DENSITY_FLOOR_ETA = 0.05
-DEFAULT_MAIN_PTG_KEY = "ptg_local_defect_eta005"
+PTG_DENSITY_FLOOR_ETA = 0.05
+PTG_PRIMARY_KEY = "ptg_local_defect_eta005"
 PTG_X_LABELS: Dict[str, str] = {
     "ptg_local_defect_eta005": "Local-defect PTG",
     "ptg_local_defect_reversed_eta005": "Local-defect PTG, reversed time",
@@ -70,12 +70,12 @@ SCHEDULE_LABELS: Dict[str, str] = {
     "gits": "GITS",
     "ots": "OTS",
 }
-DEFAULT_SEEDS: Tuple[int, ...] = (0, 1, 2, 3, 4)
-DEFAULT_REFERENCE_MACRO_FACTOR = 4.0
-DEFAULT_DENSE_REFERENCE_MACRO_FACTOR = 16.0
-DEFAULT_CALIBRATION_TRACE_SAMPLES = 1
-DEFAULT_VALIDATION_WINDOWS = 20
-DEFAULT_TEST_WINDOWS = 0
+PTG_SEEDS: Tuple[int, ...] = (0, 1, 2, 3, 4)
+PTG_REFERENCE_MACRO_FACTOR = 4.0
+PTG_DENSE_REFERENCE_MACRO_FACTOR = 16.0
+PTG_CALIBRATION_TRACE_SAMPLE_COUNT = 1
+PTG_VALIDATION_WINDOW_COUNT = 20
+PTG_TEST_WINDOW_COUNT = 0
 
 
 class _IndexSubset:
@@ -317,10 +317,10 @@ def _runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
     datasets = parse_csv(str(getattr(args, "datasets", ",".join(DATASET_ORDER))))
     solvers = parse_csv(str(getattr(args, "solvers", ",".join(SOLVER_ORDER))))
     target_nfes = parse_int_csv(str(getattr(args, "target_nfes", ",".join(str(nfe) for nfe in TARGET_NFES))))
-    seeds = parse_int_csv(str(getattr(args, "seeds", ",".join(str(seed) for seed in DEFAULT_SEEDS))))
+    seeds = parse_int_csv(str(getattr(args, "seeds", ",".join(str(seed) for seed in PTG_SEEDS))))
     argv = [
         "--out_root",
-        str(DEFAULT_RESULTS_DIR / "_collect_runner_unused"),
+        str(PTG_RESULTS_DIR / "_collect_runner_unused"),
         "--forecast_datasets",
         ",".join(datasets),
         "--conditional_generation_datasets",
@@ -338,7 +338,7 @@ def _runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
         "--num_eval_samples",
         "1",
         "--eval_windows_val",
-        str(int(getattr(args, "val_windows", DEFAULT_VALIDATION_WINDOWS))),
+        str(int(getattr(args, "val_windows", PTG_VALIDATION_WINDOW_COUNT))),
     ]
     backbone_manifest = str(getattr(args, "backbone_manifest", "outputs/backbone_matrix/backbone_manifest.json"))
     if backbone_manifest.strip():
@@ -548,8 +548,8 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
         "auxiliary_trace_key": VELOCITY_VARIATION_TRACE_KEY,
         "paper_facing_trace_key": LOCAL_DEFECT_TRACE_KEY,
         "oracle_local_error_trace_key": ORACLE_LOCAL_ERROR_TRACE_KEY,
-        "density_floor_eta": float(DEFAULT_DENSITY_FLOOR_ETA),
-        "main_ptg_key": DEFAULT_MAIN_PTG_KEY,
+        "density_floor_eta": float(PTG_DENSITY_FLOOR_ETA),
+        "main_ptg_key": PTG_PRIMARY_KEY,
         "test_trace_used": False,
         "cells": cells,
     }
@@ -1011,14 +1011,14 @@ def build_points(
                 reference_grid,
                 schedule_grid,
                 solver_order_p=float(solver_p),
-                density_floor_eta=DEFAULT_DENSITY_FLOOR_ETA,
+                density_floor_eta=PTG_DENSITY_FLOOR_ETA,
             )
             local_defect_reversed_eta = _ptg_variant(
                 local_defect,
                 reference_grid,
                 schedule_grid,
                 solver_order_p=float(solver_p),
-                density_floor_eta=DEFAULT_DENSITY_FLOOR_ETA,
+                density_floor_eta=PTG_DENSITY_FLOOR_ETA,
                 reverse_schedule=True,
             )
             obs_key = (dataset, target_nfe, solver_key, schedule_key)
@@ -1054,7 +1054,7 @@ def build_points(
                     "rho_integral_local_defect_reversed_eta005": float(local_defect_reversed_eta.rho_integral),
                     "rho_integral_velocity_variation_raw": float(velocity_variation_raw.rho_integral),
                     "rho_integral_velocity_variation_reversed": float(velocity_variation_reversed.rho_integral),
-                    "density_floor_eta": float(DEFAULT_DENSITY_FLOOR_ETA),
+                    "density_floor_eta": float(PTG_DENSITY_FLOOR_ETA),
                     "eps_h": float(eps_h),
                     "kappa_mean": float(np.mean(kappa)),
                     "schedule_grid": ";".join(f"{float(x):.10g}" for x in schedule_grid),
@@ -1130,7 +1130,7 @@ def _axis_limits(values: np.ndarray, *, pad_fraction: float = 0.08) -> Tuple[flo
     return low - pad_fraction * span, high + pad_fraction * span
 
 
-def summarize_ptg_points(points: Sequence[Mapping[str, Any]], *, main_ptg_key: str = DEFAULT_MAIN_PTG_KEY) -> Dict[str, Any]:
+def summarize_ptg_points(points: Sequence[Mapping[str, Any]], *, main_ptg_key: str = PTG_PRIMARY_KEY) -> Dict[str, Any]:
     if not points:
         raise ValueError("Cannot summarize an empty point set.")
     y = [float(point["observed_integration_gain_percent"]) for point in points]
@@ -1158,13 +1158,13 @@ def summarize_ptg_points(points: Sequence[Mapping[str, Any]], *, main_ptg_key: s
         "main_spearman_rho": main_rho,
         "main_spearman_positive": bool(math.isfinite(main_rho) and main_rho > 0.0),
         "n_points": int(len(points)),
-        "density_floor_eta": float(DEFAULT_DENSITY_FLOOR_ETA),
+        "density_floor_eta": float(PTG_DENSITY_FLOOR_ETA),
         "observed_y_key": "observed_integration_gain_percent",
         "variants": variants,
     }
 
 
-def build_figure(points: Sequence[Mapping[str, Any]], *, x_key: str = DEFAULT_MAIN_PTG_KEY):
+def build_figure(points: Sequence[Mapping[str, Any]], *, x_key: str = PTG_PRIMARY_KEY):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -1308,7 +1308,7 @@ def plot_points(
     png_path: Path,
     pdf_path: Path,
     dpi: int = 600,
-    x_key: str = DEFAULT_MAIN_PTG_KEY,
+    x_key: str = PTG_PRIMARY_KEY,
 ) -> Dict[str, str]:
     fig, _ax = build_figure(points, x_key=str(x_key))
     png_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1328,7 +1328,7 @@ def plot_points_with_diagnostics(
     pdf_path: Path,
     diagnostics_json_path: Path,
     dpi: int = 600,
-    main_ptg_key: str = DEFAULT_MAIN_PTG_KEY,
+    main_ptg_key: str = PTG_PRIMARY_KEY,
 ) -> Dict[str, Any]:
     diagnostics = summarize_ptg_points(points, main_ptg_key=str(main_ptg_key))
     outputs = plot_points(
@@ -1353,7 +1353,7 @@ def synthetic_payload() -> Dict[str, Any]:
         for solver_idx, solver_key in enumerate(SOLVER_ORDER):
             for target_nfe in TARGET_NFES:
                 runtime_nfe = target_nfe if solver_key in {"euler", "dpmpp2m"} else target_nfe // 2
-                reference_steps = max(32, int(round(DEFAULT_REFERENCE_MACRO_FACTOR * runtime_nfe)))
+                reference_steps = max(32, int(round(PTG_REFERENCE_MACRO_FACTOR * runtime_nfe)))
                 reference_grid = [float(i) / float(reference_steps) for i in range(reference_steps + 1)]
                 trace = [
                     0.8
@@ -1397,16 +1397,16 @@ def synthetic_payload() -> Dict[str, Any]:
         "datasets": list(DATASET_ORDER),
         "solvers": list(SOLVER_ORDER),
         "target_nfes": list(TARGET_NFES),
-        "seeds": list(DEFAULT_SEEDS),
-        "validation_windows": DEFAULT_VALIDATION_WINDOWS,
-        "reference_macro_factor": DEFAULT_REFERENCE_MACRO_FACTOR,
-        "calibration_trace_samples": DEFAULT_CALIBRATION_TRACE_SAMPLES,
+        "seeds": list(PTG_SEEDS),
+        "validation_windows": PTG_VALIDATION_WINDOW_COUNT,
+        "reference_macro_factor": PTG_REFERENCE_MACRO_FACTOR,
+        "calibration_trace_samples": PTG_CALIBRATION_TRACE_SAMPLE_COUNT,
         "signal_trace_key": VELOCITY_VARIATION_SIGNAL_TRACE_KEY,
         "auxiliary_trace_key": VELOCITY_VARIATION_TRACE_KEY,
         "paper_facing_trace_key": LOCAL_DEFECT_TRACE_KEY,
         "oracle_local_error_trace_key": ORACLE_LOCAL_ERROR_TRACE_KEY,
-        "density_floor_eta": DEFAULT_DENSITY_FLOOR_ETA,
-        "main_ptg_key": DEFAULT_MAIN_PTG_KEY,
+        "density_floor_eta": PTG_DENSITY_FLOOR_ETA,
+        "main_ptg_key": PTG_PRIMARY_KEY,
         "test_trace_used": False,
         "cells": cells,
     }
@@ -1445,14 +1445,14 @@ def build_argparser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     collect = subparsers.add_parser("collect", help="Collect validation hardness traces using the diffusion-flow evaluation harness.")
-    collect.add_argument("--out-json", type=Path, default=DEFAULT_INPUT_JSON)
+    collect.add_argument("--out-json", type=Path, default=PTG_INPUT_JSON_PATH)
     collect.add_argument("--datasets", type=str, default=",".join(DATASET_ORDER))
     collect.add_argument("--solvers", type=str, default=",".join(SOLVER_ORDER))
     collect.add_argument("--target-nfes", type=str, default=",".join(str(nfe) for nfe in TARGET_NFES))
-    collect.add_argument("--seeds", type=str, default=",".join(str(seed) for seed in DEFAULT_SEEDS))
-    collect.add_argument("--val-windows", type=int, default=DEFAULT_VALIDATION_WINDOWS)
-    collect.add_argument("--reference-macro-factor", type=float, default=DEFAULT_REFERENCE_MACRO_FACTOR)
-    collect.add_argument("--calibration-trace-samples", type=int, default=DEFAULT_CALIBRATION_TRACE_SAMPLES)
+    collect.add_argument("--seeds", type=str, default=",".join(str(seed) for seed in PTG_SEEDS))
+    collect.add_argument("--val-windows", type=int, default=PTG_VALIDATION_WINDOW_COUNT)
+    collect.add_argument("--reference-macro-factor", type=float, default=PTG_REFERENCE_MACRO_FACTOR)
+    collect.add_argument("--calibration-trace-samples", type=int, default=PTG_CALIBRATION_TRACE_SAMPLE_COUNT)
     collect.add_argument("--backbone-manifest", type=str, default="outputs/backbone_matrix/backbone_manifest.json")
     collect.add_argument("--device", type=str, default="cuda")
     collect.add_argument("--smoke", action="store_true", help="Collect the first dataset/solver/NFE/seed with a tiny window cap.")
@@ -1461,35 +1461,35 @@ def build_argparser() -> argparse.ArgumentParser:
         "collect-integration-error",
         help="Collect locked-test endpoint integration error against a dense reference rollout.",
     )
-    integration.add_argument("--rows-csv", type=Path, default=DEFAULT_INTEGRATION_ROWS_CSV)
-    integration.add_argument("--seed-stats-csv", type=Path, default=DEFAULT_INTEGRATION_SEED_STATS_CSV)
+    integration.add_argument("--rows-csv", type=Path, default=PTG_INTEGRATION_ERROR_ROWS_CSV_PATH)
+    integration.add_argument("--seed-stats-csv", type=Path, default=PTG_INTEGRATION_ERROR_SEED_STATS_CSV_PATH)
     integration.add_argument("--datasets", type=str, default=",".join(DATASET_ORDER))
     integration.add_argument("--solvers", type=str, default=",".join(SOLVER_ORDER))
     integration.add_argument("--target-nfes", type=str, default=",".join(str(nfe) for nfe in TARGET_NFES))
-    integration.add_argument("--seeds", type=str, default=",".join(str(seed) for seed in DEFAULT_SEEDS))
+    integration.add_argument("--seeds", type=str, default=",".join(str(seed) for seed in PTG_SEEDS))
     integration.add_argument("--schedules", type=str, default=",".join(INTEGRATION_SCHEDULES))
-    integration.add_argument("--test-windows", type=int, default=DEFAULT_TEST_WINDOWS)
+    integration.add_argument("--test-windows", type=int, default=PTG_TEST_WINDOW_COUNT)
     integration.add_argument("--integration-batch-size", type=int, default=64)
-    integration.add_argument("--dense-reference-macro-factor", type=float, default=DEFAULT_DENSE_REFERENCE_MACRO_FACTOR)
+    integration.add_argument("--dense-reference-macro-factor", type=float, default=PTG_DENSE_REFERENCE_MACRO_FACTOR)
     integration.add_argument("--backbone-manifest", type=str, default="outputs/backbone_matrix/backbone_manifest.json")
     integration.add_argument("--device", type=str, default="cuda")
     integration.add_argument("--resume", action="store_true", help="Skip seed cells already present in --rows-csv.")
     integration.add_argument("--smoke", action="store_true", help="Collect one tiny integration-error cell.")
 
     plot = subparsers.add_parser("plot", help="Join collected PTG inputs with integration-error gains and render the figure.")
-    plot.add_argument("--input-json", type=Path, default=DEFAULT_INPUT_JSON)
-    plot.add_argument("--integration-error-csv", type=Path, default=DEFAULT_INTEGRATION_SEED_STATS_CSV)
-    plot.add_argument("--points-csv", type=Path, default=DEFAULT_POINTS_CSV)
-    plot.add_argument("--diagnostics-json", type=Path, default=DEFAULT_DIAGNOSTICS_JSON)
-    plot.add_argument("--png", type=Path, default=DEFAULT_PNG)
-    plot.add_argument("--pdf", type=Path, default=DEFAULT_PDF)
+    plot.add_argument("--input-json", type=Path, default=PTG_INPUT_JSON_PATH)
+    plot.add_argument("--integration-error-csv", type=Path, default=PTG_INTEGRATION_ERROR_SEED_STATS_CSV_PATH)
+    plot.add_argument("--points-csv", type=Path, default=PTG_POINTS_CSV_PATH)
+    plot.add_argument("--diagnostics-json", type=Path, default=PTG_DIAGNOSTICS_JSON_PATH)
+    plot.add_argument("--png", type=Path, default=PTG_FIGURE_PNG_PATH)
+    plot.add_argument("--pdf", type=Path, default=PTG_FIGURE_PDF_PATH)
     plot.add_argument("--dpi", type=int, default=600)
 
     synth = subparsers.add_parser("plot-synthetic", help="Render a synthetic plot for smoke checks.")
-    synth.add_argument("--points-csv", type=Path, default=DEFAULT_RESULTS_DIR / "synthetic_ptg_points.csv")
-    synth.add_argument("--diagnostics-json", type=Path, default=DEFAULT_RESULTS_DIR / "synthetic_ptg_diagnostics.json")
-    synth.add_argument("--png", type=Path, default=DEFAULT_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.png")
-    synth.add_argument("--pdf", type=Path, default=DEFAULT_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.pdf")
+    synth.add_argument("--points-csv", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_points.csv")
+    synth.add_argument("--diagnostics-json", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_diagnostics.json")
+    synth.add_argument("--png", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.png")
+    synth.add_argument("--pdf", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.pdf")
     synth.add_argument("--dpi", type=int, default=200)
     return parser
 

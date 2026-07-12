@@ -12,11 +12,11 @@ from diffusion_flow_inference.data.otflow_paths import project_root
 from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import BASELINE_SCHEDULE_KEYS, TRANSFER_SCHEDULE_KEYS, build_schedule_grid, schedule_display_name
 
 PROJECT_ROOT = project_root()
-DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results" / "velocity_variation_difficulty"
-DEFAULT_FIGURE_DIR = PROJECT_ROOT / "figures"
-DEFAULT_INPUT_JSON = DEFAULT_RESULTS_DIR / "velocity_variation_difficulty_payload.json"
-DEFAULT_PNG = DEFAULT_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.png"
-DEFAULT_PDF = DEFAULT_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.pdf"
+VELOCITY_VARIATION_RESULTS_DIR = PROJECT_ROOT / "results" / "velocity_variation_difficulty"
+VELOCITY_VARIATION_FIGURE_DIR = PROJECT_ROOT / "figures"
+VELOCITY_VARIATION_INPUT_JSON_PATH = VELOCITY_VARIATION_RESULTS_DIR / "velocity_variation_difficulty_payload.json"
+VELOCITY_VARIATION_FIGURE_PNG_PATH = VELOCITY_VARIATION_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.png"
+VELOCITY_VARIATION_FIGURE_PDF_PATH = VELOCITY_VARIATION_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.pdf"
 VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY = "velocity_variation_difficulty_trace"
 
 SCHEDULE_ORDER = BASELINE_SCHEDULE_KEYS
@@ -119,7 +119,13 @@ def build_figure(payload: Mapping[str, Any]):
     return fig
 
 
-def plot_payload(payload: Mapping[str, Any], *, png_path: Path = DEFAULT_PNG, pdf_path: Path = DEFAULT_PDF, dpi: int = 300) -> Dict[str, str]:
+def plot_payload(
+    payload: Mapping[str, Any],
+    *,
+    png_path: Path = VELOCITY_VARIATION_FIGURE_PNG_PATH,
+    pdf_path: Path = VELOCITY_VARIATION_FIGURE_PDF_PATH,
+    dpi: int = 300,
+) -> Dict[str, str]:
     fig = build_figure(payload)
     try:
         png_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,12 +142,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build the velocity-variation difficulty trace figure.")
     sub = parser.add_subparsers(dest="command", required=True)
     synth = sub.add_parser("synthetic", help="Write a lightweight velocity-variation difficulty payload.")
-    synth.add_argument("--out-json", type=Path, default=DEFAULT_INPUT_JSON)
+    synth.add_argument("--out-json", type=Path, default=VELOCITY_VARIATION_INPUT_JSON_PATH)
     synth.add_argument("--runtime-nfe", type=int, default=10)
     plot = sub.add_parser("plot", help="Render a velocity-variation difficulty payload.")
-    plot.add_argument("--input-json", type=Path, default=DEFAULT_INPUT_JSON)
-    plot.add_argument("--png", type=Path, default=DEFAULT_PNG)
-    plot.add_argument("--pdf", type=Path, default=DEFAULT_PDF)
+    plot.add_argument("--input-json", type=Path, default=VELOCITY_VARIATION_INPUT_JSON_PATH)
+    plot.add_argument("--png", type=Path, default=VELOCITY_VARIATION_FIGURE_PNG_PATH)
+    plot.add_argument("--pdf", type=Path, default=VELOCITY_VARIATION_FIGURE_PDF_PATH)
     plot.add_argument("--dpi", type=int, default=300)
     return parser
 

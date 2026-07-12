@@ -42,7 +42,7 @@ class DiffusionFlowScheduleReviewFixTests(unittest.TestCase):
         self.assertAlmostEqual(grid[-1], 1.0)
         self.assertTrue(all(b > a for a, b in zip(grid, grid[1:])))
 
-    def test_seed_paired_relative_mase_gain_is_preserved_in_summary_rows(self) -> None:
+    def test_summary_relative_metrics_preserve_seed_paired_gains(self) -> None:
         rows = [
             {
                 "benchmark_family": "forecast_extrapolation",

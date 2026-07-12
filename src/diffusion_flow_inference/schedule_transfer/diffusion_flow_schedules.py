@@ -19,7 +19,7 @@ TRANSFER_SCHEDULE_KEYS: Tuple[str, ...] = ("ays", "gits", "ots")
 
 _AYS_REFERENCE_TIMESTEPS: Tuple[int, ...] = (999, 850, 736, 645, 545, 455, 343, 233, 124, 24, 0)
 _GITS_REFERENCE_SIGMAS: Tuple[float, ...] = (80.0, 10.9836, 3.8811, 1.5840, 0.5666, 0.1698, 0.0020)
-_OTS_DEFAULT_EPS = 1e-3
+_OTS_EPSILON = 1e-3
 _OTS_LINEAR_BETA_0 = 0.1
 _OTS_LINEAR_BETA_1 = 20.0
 
@@ -226,7 +226,7 @@ class _OtsStepOptim:
     def get_ts_lambdas(
         self,
         n_steps: int,
-        eps: float = _OTS_DEFAULT_EPS,
+        eps: float = _OTS_EPSILON,
         init_type: str = "unif_t",
     ) -> Tuple[np.ndarray, np.ndarray]:
         minimize, LinearConstraint = _scipy_optimizer()
@@ -284,8 +284,8 @@ class _OtsStepOptim:
 @lru_cache(maxsize=None)
 def _ots_reference_progression(n_steps: int) -> Tuple[float, ...]:
     optim = _OtsStepOptim()
-    t_res, _ = optim.get_ts_lambdas(int(n_steps), eps=_OTS_DEFAULT_EPS, init_type="unif_t")
-    progression = (float(optim.T) - t_res) / max(float(optim.T - _OTS_DEFAULT_EPS), 1e-12)
+    t_res, _ = optim.get_ts_lambdas(int(n_steps), eps=_OTS_EPSILON, init_type="unif_t")
+    progression = (float(optim.T) - t_res) / max(float(optim.T - _OTS_EPSILON), 1e-12)
     progression[0] = 0.0
     progression[-1] = 1.0
     return _ensure_monotone(progression.tolist())
