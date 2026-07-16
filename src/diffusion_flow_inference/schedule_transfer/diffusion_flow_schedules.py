@@ -5,16 +5,28 @@ import math
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 
-from diffusion_flow_inference.evaluation.otflow_sampling_support import _apply_sample_overrides, _metric_bundle, _restore_sample_overrides
-from diffusion_flow_inference.schedule_transfer.otflow_schedule_diagnostics import _collect_rollout_diagnostics
+from diffusion_flow_inference.evaluation.otflow_sampling_support import (
+    _metric_bundle,
+    temporary_sample_config,
+)
 from diffusion_flow_inference.models.otflow_train_val import eval_many_windows
+from diffusion_flow_inference.schedule_transfer.otflow_schedule_diagnostics import (
+    _collect_rollout_diagnostics,
+)
 
-BASELINE_SCHEDULE_KEYS: Tuple[str, ...] = ("uniform", "late_power_3", "flowts_power_sampling", "ays", "gits", "ots")
+SCHEDULE_KEYS: Tuple[str, ...] = (
+    "uniform",
+    "late_power_3",
+    "flowts_power_sampling",
+    "ays",
+    "gits",
+    "ots",
+)
 TRANSFER_SCHEDULE_KEYS: Tuple[str, ...] = ("ays", "gits", "ots")
 
 _AYS_REFERENCE_TIMESTEPS: Tuple[int, ...] = (999, 850, 736, 645, 545, 455, 343, 233, 124, 24, 0)
@@ -50,27 +62,43 @@ def _flowts_power_grid(n_steps: int, power: float = 0.03) -> Tuple[float, ...]:
     return tuple((float(idx) / float(n_steps)) ** power for idx in range(n_steps + 1))
 
 
-def _ensure_monotone(grid: Sequence[float]) -> Tuple[float, ...]:
-    if not grid:
-        raise ValueError("Grid must contain at least one point.")
-    out: List[float] = [float(grid[0])]
-    for value in grid[1:]:
-        current = float(value)
-        if current <= out[-1]:
-            current = min(1.0, out[-1] + 1e-6)
-        out.append(current)
-    out[0] = 0.0
-    out[-1] = 1.0
-    return tuple(float(x) for x in out)
+def _validate_schedule_grid(
+    grid: Sequence[float],
+    *,
+    name: str,
+    expected_steps: Optional[int] = None,
+) -> Tuple[float, ...]:
+    values = np.asarray(grid, dtype=np.float64)
+    if values.ndim != 1 or values.size < 2:
+        raise ValueError(f"{name} must be a one-dimensional grid with at least two nodes.")
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{name} must contain only finite values.")
+    if expected_steps is not None and values.size != int(expected_steps) + 1:
+        raise ValueError(
+            f"{name} must contain {int(expected_steps) + 1} nodes, got {int(values.size)}."
+        )
+    if float(values[0]) != 0.0 or float(values[-1]) != 1.0:
+        raise ValueError(f"{name} must start at 0.0 and end at 1.0.")
+    if np.any(values < 0.0) or np.any(values > 1.0):
+        raise ValueError(f"{name} must lie within [0.0, 1.0].")
+    if np.any(np.diff(values) <= 0.0):
+        raise ValueError(f"{name} must be strictly increasing.")
+    return tuple(float(value) for value in values.tolist())
 
 
-def _resample_reference_progression(progression: Sequence[float], n_steps: int) -> Tuple[float, ...]:
+def _resample_reference_progression(
+    progression: Sequence[float], n_steps: int
+) -> Tuple[float, ...]:
     ref = np.asarray(progression, dtype=np.float64)
     if ref.ndim != 1 or ref.size < 2:
         raise ValueError("Reference progression must be one-dimensional with at least two points.")
     src = np.linspace(0.0, 1.0, int(ref.size), dtype=np.float64)
     dst = np.linspace(0.0, 1.0, int(n_steps) + 1, dtype=np.float64)
-    return _ensure_monotone(np.interp(dst, src, ref).tolist())
+    return _validate_schedule_grid(
+        np.interp(dst, src, ref).tolist(),
+        name="resampled_reference_progression",
+        expected_steps=int(n_steps),
+    )
 
 
 def _normalize_descending_reference(values: Sequence[float]) -> Tuple[float, ...]:
@@ -83,7 +111,7 @@ def _normalize_descending_reference(values: Sequence[float]) -> Tuple[float, ...
     progression = (float(arr[0]) - arr) / span
     progression[0] = 0.0
     progression[-1] = 1.0
-    return _ensure_monotone(progression.tolist())
+    return _validate_schedule_grid(progression.tolist(), name="normalized_reference_progression")
 
 
 def _ays_reference_progression() -> Tuple[float, ...]:
@@ -98,7 +126,9 @@ def _scipy_optimizer():
     try:
         from scipy.optimize import LinearConstraint, minimize
     except ImportError as exc:
-        raise RuntimeError("OTS schedule construction requires scipy.optimize to match DM-NonUniform.") from exc
+        raise RuntimeError(
+            "OTS schedule construction requires scipy.optimize to match DM-NonUniform."
+        ) from exc
     return minimize, LinearConstraint
 
 
@@ -114,26 +144,22 @@ class _NoiseScheduleVP:
         self.T = 1.0
 
     def marginal_log_mean_coeff(self, t: torch.Tensor) -> torch.Tensor:
-        return -0.25 * t ** 2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
+        return -0.25 * t**2 * (self.beta_1 - self.beta_0) - 0.5 * t * self.beta_0
 
     def marginal_alpha(self, t: torch.Tensor) -> torch.Tensor:
         return torch.exp(self.marginal_log_mean_coeff(t))
 
-    def marginal_std(self, t: torch.Tensor) -> torch.Tensor:
-        return torch.sqrt(torch.clamp(1.0 - torch.exp(2.0 * self.marginal_log_mean_coeff(t)), min=1e-12))
-
-    def marginal_lambda(self, t: torch.Tensor) -> torch.Tensor:
-        alpha = self.marginal_alpha(t)
-        sigma = self.marginal_std(t)
-        return torch.log(torch.clamp(alpha / sigma, min=1e-12))
-
     def inverse_lambda(self, lamb: torch.Tensor) -> torch.Tensor:
         lamb = lamb.to(dtype=torch.float64)
-        tmp = 2.0 * (self.beta_1 - self.beta_0) * torch.logaddexp(
-            -2.0 * lamb,
-            torch.zeros((1,), dtype=lamb.dtype, device=lamb.device),
+        tmp = (
+            2.0
+            * (self.beta_1 - self.beta_0)
+            * torch.logaddexp(
+                -2.0 * lamb,
+                torch.zeros((1,), dtype=lamb.dtype, device=lamb.device),
+            )
         )
-        denom = torch.sqrt(self.beta_0 ** 2 + tmp) + self.beta_0
+        denom = torch.sqrt(self.beta_0**2 + tmp) + self.beta_0
         return tmp / torch.clamp(denom * (self.beta_1 - self.beta_0), min=1e-12)
 
 
@@ -171,12 +197,14 @@ class _OtsStepOptim:
     def sel_lambdas_lof_obj(self, lambda_vec: Sequence[float], eps: float) -> float:
         lambda_eps = float(self.lambda_func([eps])[0])
         lambda_T = float(self.lambda_func([self.T])[0])
-        lambda_vec_ext = np.concatenate(([lambda_T], np.asarray(lambda_vec, dtype=np.float64), [lambda_eps]))
+        lambda_vec_ext = np.concatenate(
+            ([lambda_T], np.asarray(lambda_vec, dtype=np.float64), [lambda_eps])
+        )
         hv = np.diff(lambda_vec_ext)
         emlv_sq = np.exp(-2.0 * lambda_vec_ext)
         alpha_vec = 1.0 / np.sqrt(1.0 + emlv_sq)
         sigma_vec = 1.0 / np.sqrt(1.0 + np.exp(2.0 * lambda_vec_ext))
-        data_err_vec = (sigma_vec ** 2) / np.clip(alpha_vec, 1e-12, None)
+        data_err_vec = (sigma_vec**2) / np.clip(alpha_vec, 1e-12, None)
         trunc_num = 3
         res = 0.0
         c_vec = np.zeros(len(lambda_vec_ext) - 1, dtype=np.float64)
@@ -188,7 +216,11 @@ class _OtsStepOptim:
             elif s in (1, len(lambda_vec_ext) - 3):
                 n = s - 1
                 j0 = -elv[n + 1] * self.H1(hv[n + 1]) / max(hv[n], 1e-12)
-                j1 = elv[n + 1] * (self.H1(hv[n + 1]) + hv[n] * self.H0(hv[n + 1])) / max(hv[n], 1e-12)
+                j1 = (
+                    elv[n + 1]
+                    * (self.H1(hv[n + 1]) + hv[n] * self.H0(hv[n + 1]))
+                    / max(hv[n], 1e-12)
+                )
                 if s >= trunc_num:
                     c_vec[n] += data_err_vec[n] * j0
                     c_vec[n + 1] += data_err_vec[n + 1] * j1
@@ -200,7 +232,11 @@ class _OtsStepOptim:
                 denom1 = max(hv[n] * hv[n + 1], 1e-12)
                 denom2 = max(hv[n + 1] * (hv[n] + hv[n + 1]), 1e-12)
                 j0 = elv[n + 2] * (self.H2(hv[n + 2]) + hv[n + 1] * self.H1(hv[n + 2])) / denom0
-                j1 = -elv[n + 2] * (self.H2(hv[n + 2]) + (hv[n] + hv[n + 1]) * self.H1(hv[n + 2])) / denom1
+                j1 = (
+                    -elv[n + 2]
+                    * (self.H2(hv[n + 2]) + (hv[n] + hv[n + 1]) * self.H1(hv[n + 2]))
+                    / denom1
+                )
                 j2 = (
                     elv[n + 2]
                     * (
@@ -288,7 +324,11 @@ def _ots_reference_progression(n_steps: int) -> Tuple[float, ...]:
     progression = (float(optim.T) - t_res) / max(float(optim.T - _OTS_EPSILON), 1e-12)
     progression[0] = 0.0
     progression[-1] = 1.0
-    return _ensure_monotone(progression.tolist())
+    return _validate_schedule_grid(
+        progression.tolist(),
+        name="ots_reference_progression",
+        expected_steps=int(n_steps),
+    )
 
 
 def _catalog_path() -> Path:
@@ -309,22 +349,27 @@ def _validate_positive_n_steps(n_steps: int) -> int:
     return n_steps
 
 
-def build_schedule_grid(schedule_key: str, n_steps: int) -> Optional[Tuple[float, ...]]:
+def build_schedule_grid(schedule_key: str, n_steps: int) -> Tuple[float, ...]:
     key = str(schedule_key).strip().lower()
     n_steps = _validate_positive_n_steps(int(n_steps))
     if key == "uniform":
-        return _ensure_monotone(_uniform_grid(n_steps))
-    if key == "late_power_3":
-        return _ensure_monotone(_late_power_grid(n_steps, power=3.0))
-    if key == "flowts_power_sampling":
-        return _ensure_monotone(_flowts_power_grid(n_steps, power=0.03))
-    if key == "ays":
-        return _resample_reference_progression(_ays_reference_progression(), n_steps)
-    if key == "gits":
-        return _resample_reference_progression(_gits_reference_progression(), n_steps)
-    if key == "ots":
-        return _ots_reference_progression(n_steps)
-    return None
+        grid = _uniform_grid(n_steps)
+    elif key == "late_power_3":
+        grid = _late_power_grid(n_steps, power=3.0)
+    elif key == "flowts_power_sampling":
+        grid = _flowts_power_grid(n_steps, power=0.03)
+    elif key == "ays":
+        grid = _resample_reference_progression(_ays_reference_progression(), n_steps)
+    elif key == "gits":
+        grid = _resample_reference_progression(_gits_reference_progression(), n_steps)
+    elif key == "ots":
+        grid = _ots_reference_progression(n_steps)
+    else:
+        raise ValueError(
+            f"Unsupported schedule key {schedule_key!r}; expected one of {SCHEDULE_KEYS}."
+        )
+    return _validate_schedule_grid(grid, name=f"{key}_schedule_grid", expected_steps=n_steps)
+
 
 def schedule_display_name(schedule_key: str) -> str:
     key = str(schedule_key).strip().lower()
@@ -350,7 +395,11 @@ def fixed_schedule_shape_statistics(time_grid: Sequence[float]) -> Dict[str, Opt
         return {"runtime_grid_q25": None, "runtime_grid_q50": None, "runtime_grid_q75": None}
     positions = np.linspace(0.0, 1.0, int(grid.size), dtype=np.float64)
     q25, q50, q75 = np.interp(np.asarray([0.25, 0.50, 0.75], dtype=np.float64), positions, grid)
-    return {"runtime_grid_q25": float(q25), "runtime_grid_q50": float(q50), "runtime_grid_q75": float(q75)}
+    return {
+        "runtime_grid_q25": float(q25),
+        "runtime_grid_q50": float(q50),
+        "runtime_grid_q75": float(q75),
+    }
 
 
 def run_fixed_schedule_variant(
@@ -368,8 +417,7 @@ def run_fixed_schedule_variant(
 ) -> Dict[str, Any]:
     solver_name = str(grid_spec["solver_name"])
     time_grid = tuple(float(x) for x in grid_spec["time_grid"])
-    backup = _apply_sample_overrides(model, cfg, solver=solver_name, time_grid=time_grid)
-    try:
+    with temporary_sample_config(model, cfg, solver=solver_name, time_grid=time_grid):
         t0 = time.time()
         result = eval_many_windows(
             ds,
@@ -398,14 +446,13 @@ def run_fixed_schedule_variant(
             chosen_t0s=chosen_t0s,
             generation_seed_base=int(generation_seed_base),
         )
-    finally:
-        _restore_sample_overrides(model, cfg, backup)
-
     row = {
         "grid_name": str(grid_spec["grid_name"]),
         "grid_kind": str(grid_spec["grid_kind"]),
         "selection_group": str(grid_spec["selection_group"]),
-        "comparison_role": None if grid_spec.get("comparison_role") is None else str(grid_spec["comparison_role"]),
+        "comparison_role": None
+        if grid_spec.get("comparison_role") is None
+        else str(grid_spec["comparison_role"]),
         "solver_name": str(solver_name),
         "nfe": int(grid_spec["nfe"]),
         "power": None if grid_spec.get("power") is None else float(grid_spec["power"]),
@@ -446,7 +493,7 @@ def run_fixed_schedule_variant(
 
 
 __all__ = [
-    "BASELINE_SCHEDULE_KEYS",
+    "SCHEDULE_KEYS",
     "TRANSFER_SCHEDULE_KEYS",
     "build_schedule_grid",
     "fixed_schedule_shape_statistics",

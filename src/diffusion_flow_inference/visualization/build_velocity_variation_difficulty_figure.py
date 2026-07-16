@@ -9,17 +9,30 @@ from typing import Any, Dict, Mapping, Sequence
 import numpy as np
 
 from diffusion_flow_inference.data.otflow_paths import project_root
-from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import BASELINE_SCHEDULE_KEYS, TRANSFER_SCHEDULE_KEYS, build_schedule_grid, schedule_display_name
+from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import (
+    SCHEDULE_KEYS,
+    TRANSFER_SCHEDULE_KEYS,
+    build_schedule_grid,
+    schedule_display_name,
+)
+from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
+    VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY,
+)
 
 PROJECT_ROOT = project_root()
-VELOCITY_VARIATION_RESULTS_DIR = PROJECT_ROOT / "results" / "velocity_variation_difficulty"
-VELOCITY_VARIATION_FIGURE_DIR = PROJECT_ROOT / "figures"
-VELOCITY_VARIATION_INPUT_JSON_PATH = VELOCITY_VARIATION_RESULTS_DIR / "velocity_variation_difficulty_payload.json"
-VELOCITY_VARIATION_FIGURE_PNG_PATH = VELOCITY_VARIATION_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.png"
-VELOCITY_VARIATION_FIGURE_PDF_PATH = VELOCITY_VARIATION_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.pdf"
-VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY = "velocity_variation_difficulty_trace"
-
-SCHEDULE_ORDER = BASELINE_SCHEDULE_KEYS
+VELOCITY_VARIATION_OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "velocity_variation_difficulty"
+VELOCITY_VARIATION_RESULTS_DIR = VELOCITY_VARIATION_OUTPUT_ROOT
+VELOCITY_VARIATION_FIGURE_DIR = VELOCITY_VARIATION_OUTPUT_ROOT
+VELOCITY_VARIATION_INPUT_JSON_PATH = (
+    VELOCITY_VARIATION_RESULTS_DIR / "velocity_variation_difficulty_payload.json"
+)
+VELOCITY_VARIATION_FIGURE_PNG_PATH = (
+    VELOCITY_VARIATION_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.png"
+)
+VELOCITY_VARIATION_FIGURE_PDF_PATH = (
+    VELOCITY_VARIATION_FIGURE_DIR / "velocity_variation_difficulty_schedule_trace.pdf"
+)
+SCHEDULE_ORDER = SCHEDULE_KEYS
 PAPER_FACING_TRACE_NAME = "velocity_variation_difficulty"
 
 
@@ -27,6 +40,8 @@ def validate_time_grid(grid: Sequence[float], *, name: str = "time_grid") -> np.
     arr = np.asarray(grid, dtype=np.float64)
     if arr.ndim != 1 or arr.size < 2:
         raise ValueError(f"{name} must be a one-dimensional grid with at least two nodes.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} must contain only finite values.")
     if abs(float(arr[0])) > 1e-8 or abs(float(arr[-1]) - 1.0) > 1e-8:
         raise ValueError(f"{name} must start at 0.0 and end at 1.0.")
     if np.any(np.diff(arr) <= 0.0):
@@ -37,11 +52,18 @@ def validate_time_grid(grid: Sequence[float], *, name: str = "time_grid") -> np.
 def normalize_trace(values: Sequence[float]) -> list[float]:
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim != 1 or arr.size == 0:
-        raise ValueError("Velocity-variation difficulty trace must be a non-empty one-dimensional sequence.")
-    fill = float(np.nanmean(arr)) if np.any(np.isfinite(arr)) else 0.0
-    arr = np.nan_to_num(arr, nan=fill, posinf=fill, neginf=fill)
-    arr = np.clip(arr, 0.0, None)
-    mean = max(float(np.mean(arr)), 1e-12)
+        raise ValueError(
+            "Velocity-variation difficulty trace must be a non-empty one-dimensional sequence."
+        )
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("Velocity-variation difficulty trace must contain only finite values.")
+    if np.any(arr < 0.0):
+        raise ValueError("Velocity-variation difficulty trace must be non-negative.")
+    mean = float(np.mean(arr))
+    if mean <= 0.0:
+        raise ValueError(
+            "Velocity-variation difficulty trace must contain at least one positive value."
+        )
     return [float(x) for x in (arr / mean).tolist()]
 
 
@@ -50,8 +72,6 @@ def schedule_node_summary(schedule_key: str, runtime_nfe: int) -> Dict[str, Any]
     if key not in SCHEDULE_ORDER:
         raise ValueError(f"Unsupported active schedule {schedule_key!r}.")
     grid = build_schedule_grid(key, int(runtime_nfe))
-    if grid is None:
-        raise ValueError(f"Could not build active schedule {key!r}.")
     arr = validate_time_grid(grid, name=f"{key}_grid")
     widths = np.diff(arr)
     return {
@@ -97,10 +117,20 @@ def build_figure(payload: Mapping[str, Any]):
     if VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY not in payload:
         raise KeyError(f"Payload must include {VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY!r}.")
     trace = np.asarray(payload[VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY], dtype=np.float64)
+    if trace.ndim != 1 or not np.all(np.isfinite(trace)):
+        raise ValueError(
+            f"{VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY} must be a finite one-dimensional sequence."
+        )
+    if np.any(trace < 0.0):
+        raise ValueError(f"{VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY} must be non-negative.")
     if trace.size != ref_grid.size - 1:
-        raise ValueError("velocity_variation_difficulty_trace must have one value per reference interval.")
+        raise ValueError(
+            f"{VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY} must have one value per reference interval."
+        )
     mid = 0.5 * (ref_grid[:-1] + ref_grid[1:])
-    fig, (ax_trace, ax_nodes) = plt.subplots(2, 1, figsize=(7.2, 4.8), sharex=True, gridspec_kw={"height_ratios": [2.0, 1.2]})
+    fig, (ax_trace, ax_nodes) = plt.subplots(
+        2, 1, figsize=(7.2, 4.8), sharex=True, gridspec_kw={"height_ratios": [2.0, 1.2]}
+    )
     ax_trace.plot(mid, trace, color="#2F6B52", linewidth=2.0)
     ax_trace.set_ylabel("Velocity-variation difficulty")
     ax_trace.grid(True, axis="y", color="#DDDDDD", linewidth=0.8)
@@ -134,14 +164,19 @@ def plot_payload(
         fig.savefig(pdf_path, bbox_inches="tight")
     finally:
         import matplotlib.pyplot as plt
+
         plt.close(fig)
     return {"png": str(png_path), "pdf": str(pdf_path)}
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build the velocity-variation difficulty trace figure.")
+    parser = argparse.ArgumentParser(
+        description="Build the velocity-variation difficulty trace figure."
+    )
     sub = parser.add_subparsers(dest="command", required=True)
-    synth = sub.add_parser("synthetic", help="Write a lightweight velocity-variation difficulty payload.")
+    synth = sub.add_parser(
+        "synthetic", help="Write a lightweight velocity-variation difficulty payload."
+    )
     synth.add_argument("--out-json", type=Path, default=VELOCITY_VARIATION_INPUT_JSON_PATH)
     synth.add_argument("--runtime-nfe", type=int, default=10)
     plot = sub.add_parser("plot", help="Render a velocity-variation difficulty payload.")
@@ -160,7 +195,9 @@ def main(argv: Sequence[str] | None = None) -> Dict[str, Any]:
         return {"json": str(args.out_json), "payload": payload}
     if args.command == "plot":
         payload = load_payload(Path(args.input_json))
-        return plot_payload(payload, png_path=Path(args.png), pdf_path=Path(args.pdf), dpi=int(args.dpi))
+        return plot_payload(
+            payload, png_path=Path(args.png), pdf_path=Path(args.pdf), dpi=int(args.dpi)
+        )
     raise ValueError(f"Unsupported command {args.command!r}.")
 
 

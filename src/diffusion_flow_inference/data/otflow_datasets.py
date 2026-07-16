@@ -22,10 +22,8 @@ from typing import Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.data.otflow_paths import cryptos_data_path, es_mbp_10_data_path
-
-ArrayLike = Union[np.ndarray, torch.Tensor]
+from diffusion_flow_inference.models.config import OTFlowConfig
 
 
 # -----------------------------
@@ -61,14 +59,20 @@ class L2FeatureMap:
             "bid_v": np.asarray(bid_v),
         }
         if arrays["ask_p"].ndim != 2:
-            raise ValueError(f"ask_p must be a two-dimensional array, got shape={arrays['ask_p'].shape}.")
+            raise ValueError(
+                f"ask_p must be a two-dimensional array, got shape={arrays['ask_p'].shape}."
+            )
         T, L = arrays["ask_p"].shape
+        if T <= 0:
+            raise ValueError("L2 sequences must contain at least one snapshot.")
         if L != self.L:
             raise ValueError(f"ask_p has {L} levels, expected {self.L}.")
         expected_shape = (T, L)
         for name, values in arrays.items():
             if values.shape != expected_shape:
                 raise ValueError(f"{name} must have shape {expected_shape}, got {values.shape}.")
+            if not np.isfinite(values).all():
+                raise ValueError(f"{name} contains non-finite values.")
         ask_p, ask_v, bid_p, bid_v = (
             arrays["ask_p"],
             arrays["ask_v"],
@@ -109,7 +113,9 @@ class L2FeatureMap:
 
         return params, mid.astype(np.float32)
 
-    def decode_sequence(self, params: np.ndarray, init_mid: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def decode_sequence(
+        self, params: np.ndarray, init_mid: float
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Decode params to raw L2 arrays using the mid immediately before the window.
 
         Notes
@@ -125,6 +131,12 @@ class L2FeatureMap:
         expected_dim = 4 * L
         if D != expected_dim:
             raise ValueError(f"params must have {expected_dim} columns, got {D}.")
+        if T <= 0:
+            raise ValueError("params must contain at least one snapshot.")
+        if not np.isfinite(params).all():
+            raise ValueError("params contains non-finite values.")
+        if not np.isfinite(float(init_mid)):
+            raise ValueError("init_mid must be finite.")
 
         delta_mid = params[:, 0]
         log_spread = params[:, 1]
@@ -158,11 +170,19 @@ class L2FeatureMap:
         bid_v = np.exp(log_bid_v).astype(np.float32)
         return ask_p, ask_v, bid_p, bid_v
 
+
 # -----------------------------
 # Standardization helpers
 # -----------------------------
 def fit_standardizer(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Fit mean/std on x [T,D] only."""
+    x = np.asarray(x, dtype=np.float32)
+    if x.ndim != 2 or x.shape[0] <= 0 or x.shape[1] <= 0:
+        raise ValueError(
+            f"Standardizer input must be a non-empty two-dimensional array, got shape={x.shape}."
+        )
+    if not np.isfinite(x).all():
+        raise ValueError("Standardizer input contains non-finite values.")
     mu = x.mean(axis=0).astype(np.float32)
     sig = (x.std(axis=0) + 1e-6).astype(np.float32)
     return mu, sig
@@ -170,16 +190,6 @@ def fit_standardizer(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def apply_standardizer(x: np.ndarray, mu: np.ndarray, sig: np.ndarray) -> np.ndarray:
     return ((x - mu[None, :]) / sig[None, :]).astype(np.float32)
-
-
-def standardize_params(params: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    mu, sig = fit_standardizer(params)
-    return apply_standardizer(params, mu, sig), mu, sig
-
-
-def standardize_cond(cond: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    mu, sig = fit_standardizer(cond)
-    return apply_standardizer(cond, mu, sig), mu, sig
 
 
 def _future_horizon_from_cfg(cfg: OTFlowConfig) -> int:
@@ -202,10 +212,6 @@ def _time_feature_mode(cfg: OTFlowConfig) -> str:
     return "none"
 
 
-def _use_time_features_enabled(cfg: OTFlowConfig) -> bool:
-    return _time_feature_mode(cfg) != "none"
-
-
 def _time_feature_dim(mode: str) -> int:
     mode_key = str(mode)
     if mode_key == "gap_elapsed":
@@ -221,7 +227,9 @@ def _set_model_cond_dim(cfg: OTFlowConfig, cond_dim: int) -> None:
         raise ValueError(f"Condition dimension must be positive, got {cond_dim}.")
     current = int(getattr(cfg.model, "cond_dim", 0))
     if current > 0 and current != resolved:
-        raise ValueError(f"cfg.model.cond_dim={current} does not match data condition dimension {resolved}.")
+        raise ValueError(
+            f"cfg.model.cond_dim={current} does not match data condition dimension {resolved}."
+        )
     cfg.model.cond_dim = resolved
 
 
@@ -476,12 +484,18 @@ class WindowedParamSequenceDataset(torch.utils.data.Dataset):
         self.time_features = time_features.astype(np.float32) if time_features is not None else None
         self.time_gap_features = None if self.time_features is None else self.time_features[:, :1]
         self.elapsed_time_features = (
-            None if self.time_features is None or self.time_features.shape[1] < 2 else self.time_features[:, 1:2]
+            None
+            if self.time_features is None or self.time_features.shape[1] < 2
+            else self.time_features[:, 1:2]
         )
         self.time_gap_scale = float(time_gap_scale) if time_gap_scale is not None else None
         self.time_feature_source = str(time_feature_source)
-        self.segment_ends = None if segment_ends is None else np.asarray(segment_ends, dtype=np.int64)
-        self.valid_start_mask = None if valid_start_mask is None else np.asarray(valid_start_mask, dtype=bool)
+        self.segment_ends = (
+            None if segment_ends is None else np.asarray(segment_ends, dtype=np.int64)
+        )
+        self.valid_start_mask = (
+            None if valid_start_mask is None else np.asarray(valid_start_mask, dtype=bool)
+        )
         self.dataset_kind = None if dataset_kind is None else str(dataset_kind)
         self.dataset_metadata = {} if dataset_metadata is None else dict(dataset_metadata)
         self.global_offset = int(global_offset)
@@ -519,12 +533,6 @@ class WindowedParamSequenceDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.start_indices)
 
-    def has_time_gap_features(self) -> bool:
-        return self.time_gap_features is not None
-
-    def has_time_features(self) -> bool:
-        return self.time_features is not None
-
     def _slice_time_features(self, start: int, stop: int) -> Optional[np.ndarray]:
         if self.time_features is None:
             return None
@@ -542,7 +550,9 @@ class WindowedParamSequenceDataset(torch.utils.data.Dataset):
     def future_time_gap_features(self, t0: int, horizon: int) -> Optional[torch.Tensor]:
         if self.time_gap_features is None:
             return None
-        return torch.from_numpy(self.time_gap_features[int(t0) : int(t0) + int(horizon)].astype(np.float32, copy=True))
+        return torch.from_numpy(
+            self.time_gap_features[int(t0) : int(t0) + int(horizon)].astype(np.float32, copy=True)
+        )
 
     def __getitem__(self, idx: int):
         t = int(self.start_indices[idx])  # local index inside this split dataset
@@ -745,7 +755,9 @@ def _resolve_segment_split_bounds(
         val_end = int(segment_ends[val_idx])
 
     if not (0 < train_end < val_end <= T):
-        raise ValueError(f"Invalid segment split bounds: train_end={train_end}, val_end={val_end}, T={T}")
+        raise ValueError(
+            f"Invalid segment split bounds: train_end={train_end}, val_end={val_end}, T={T}"
+        )
     return int(train_end), int(val_end)
 
 
@@ -781,7 +793,9 @@ def _make_windowed_dataset_from_arrays(
         if left_m != left:
             raise RuntimeError("Unexpected offset mismatch")
         if valid_start_mask_full is not None:
-            valid_start_mask_seg, left_v = _slice_segment_with_history(valid_start_mask_full, start_t, end_t, H)
+            valid_start_mask_seg, left_v = _slice_segment_with_history(
+                valid_start_mask_full, start_t, end_t, H
+            )
             if left_v != left:
                 raise RuntimeError("Valid-start offset mismatch")
     else:
@@ -820,7 +834,9 @@ def _make_windowed_dataset_from_arrays(
     time_features_seg = None
     if time_features_full is not None:
         if segment_ends_full is None:
-            time_features_seg, left_g = _slice_segment_with_history(time_features_full, start_t, end_t, H)
+            time_features_seg, left_g = _slice_segment_with_history(
+                time_features_full, start_t, end_t, H
+            )
             if left_g != left:
                 raise RuntimeError("Time-feature offset mismatch")
         else:
@@ -898,15 +914,63 @@ def build_dataset_splits_from_arrays(
       - 'train', 'val', 'test' : WindowedParamSequenceDataset
       - 'stats' : normalization statistics and split bounds
     """
-    T = int(len(params_raw))
+    params_raw = np.asarray(params_raw, dtype=np.float32)
+    mids = np.asarray(mids, dtype=np.float32)
+    if params_raw.ndim != 2 or params_raw.shape[0] <= 0 or params_raw.shape[1] <= 0:
+        raise ValueError(
+            f"params_raw must be a non-empty two-dimensional array, got shape={params_raw.shape}."
+        )
+    if int(params_raw.shape[1]) != int(cfg.snapshot_dim):
+        raise ValueError(
+            f"params_raw feature width must match cfg.snapshot_dim={int(cfg.snapshot_dim)}, "
+            f"got {int(params_raw.shape[1])}."
+        )
+    if mids.ndim != 1:
+        raise ValueError(f"mids must be a one-dimensional array, got shape={mids.shape}.")
+    if not np.isfinite(params_raw).all() or not np.isfinite(mids).all():
+        raise ValueError("params_raw and mids must contain only finite values.")
+
+    T = int(params_raw.shape[0])
     if len(mids) != T:
         raise ValueError("params_raw and mids length mismatch")
-    if timestamps is not None and len(timestamps) != T:
-        raise ValueError("params_raw and timestamps length mismatch")
-    if cond_raw_full is not None and len(cond_raw_full) != T:
-        raise ValueError("params_raw and cond_raw_full length mismatch")
-    if valid_start_mask is not None and len(valid_start_mask) != T:
-        raise ValueError("params_raw and valid_start_mask length mismatch")
+
+    if timestamps is not None:
+        timestamps = np.asarray(timestamps)
+        if timestamps.ndim != 1 or len(timestamps) != T:
+            raise ValueError("timestamps must be one-dimensional with one entry per sample")
+        if not np.isfinite(timestamps).all():
+            raise ValueError("timestamps must contain only finite values.")
+    if cond_raw_full is not None:
+        cond_raw_full = np.asarray(cond_raw_full, dtype=np.float32)
+        if cond_raw_full.ndim != 2 or len(cond_raw_full) != T or cond_raw_full.shape[1] <= 0:
+            raise ValueError("cond_raw_full must be two-dimensional with one row per sample")
+        if not np.isfinite(cond_raw_full).all():
+            raise ValueError("cond_raw_full must contain only finite values.")
+    if valid_start_mask is not None:
+        valid_start_mask = np.asarray(valid_start_mask, dtype=bool)
+        if valid_start_mask.ndim != 1 or len(valid_start_mask) != T:
+            raise ValueError("valid_start_mask must be one-dimensional with one entry per sample")
+
+    if segment_ends is not None:
+        segment_ends = np.asarray(segment_ends, dtype=np.int64)
+        if segment_ends.ndim != 1 or segment_ends.size == 0:
+            raise ValueError("segment_ends must be a non-empty one-dimensional array.")
+        if (
+            np.any(segment_ends <= 0)
+            or np.any(np.diff(segment_ends) <= 0)
+            or int(segment_ends[-1]) != T
+        ):
+            raise ValueError(
+                "segment_ends must be strictly increasing and terminate at the sample count."
+            )
+
+    if timestamps is not None:
+        time_segment_ends = (
+            np.asarray([T], dtype=np.int64) if segment_ends is None else segment_ends
+        )
+        for start, end in zip(_segment_starts_from_ends(time_segment_ends), time_segment_ends):
+            if np.any(np.diff(timestamps[int(start) : int(end)]) < 0):
+                raise ValueError("timestamps must be non-decreasing within each segment.")
 
     if segment_ends is None:
         train_end, val_end = _resolve_split_bounds(
@@ -934,13 +998,17 @@ def build_dataset_splits_from_arrays(
     else:
         p_mu = p_sig = None
 
-    resolved_cond_raw_full = None if cond_raw_full is None else np.asarray(cond_raw_full, dtype=np.float32)
+    resolved_cond_raw_full = (
+        None if cond_raw_full is None else np.asarray(cond_raw_full, dtype=np.float32)
+    )
     c_mu = c_sig = None
     if resolved_cond_raw_full is None and cfg.use_cond_features:
         resolved_cond_raw_full = build_cond_features(params_raw, mids, cfg)
     if resolved_cond_raw_full is not None:
         if not bool(cfg.use_cond_features):
-            raise ValueError("External conditional features require cfg.data.use_cond_features=True.")
+            raise ValueError(
+                "External conditional features require cfg.data.use_cond_features=True."
+            )
         if cfg.cond_standardize:
             c_mu, c_sig = fit_standardizer(resolved_cond_raw_full[:train_end])
 
@@ -951,22 +1019,22 @@ def build_dataset_splits_from_arrays(
     time_feature_source = "none"
     time_feature_mode = _time_feature_mode(cfg)
     if time_feature_mode != "none":
+        if timestamps is None:
+            raise ValueError("Time features were requested, but timestamps are missing.")
         time_gap_scale = _fit_time_gap_scale(
-            None if timestamps is None else np.asarray(timestamps, dtype=np.int64),
+            np.asarray(timestamps, dtype=np.int64),
             train_end=int(train_end),
             segment_ends=segment_ends,
         )
         time_features_full = _build_time_features(
-            None if timestamps is None else np.asarray(timestamps, dtype=np.int64),
+            np.asarray(timestamps, dtype=np.int64),
             gap_scale=float(time_gap_scale),
             segment_ends=segment_ends,
             include_elapsed=bool(time_feature_mode == "gap_elapsed"),
         )
         if time_features_full is None:
-            time_features_full = np.zeros((T, _time_feature_dim(time_feature_mode)), dtype=np.float32)
-            time_feature_source = "missing_timestamps_zero_fill"
-        else:
-            time_feature_source = "timestamps"
+            raise RuntimeError("Failed to build requested time features from timestamps.")
+        time_feature_source = "timestamps"
 
     # Build split datasets (each with left history buffer)
     ds_train = _make_windowed_dataset_from_arrays(
@@ -1041,7 +1109,9 @@ def build_dataset_splits_from_arrays(
         "params_std": p_sig,
         "cond_mean": c_mu,
         "cond_std": c_sig,
-        "cond_dim": int(resolved_cond_raw_full.shape[1]) if resolved_cond_raw_full is not None else 0,
+        "cond_dim": int(resolved_cond_raw_full.shape[1])
+        if resolved_cond_raw_full is not None
+        else 0,
         "history_len": int(cfg.history_len),
         "time_gap_scale": None if time_gap_scale is None else float(time_gap_scale),
         "use_time_gaps": bool(getattr(cfg.model, "use_time_gaps", False)),
@@ -1058,7 +1128,6 @@ def build_dataset_splits_from_arrays(
     }
 
     return {"train": ds_train, "val": ds_val, "test": ds_test, "stats": stats}
-
 
 
 def build_dataset_splits_from_npz_l2(
@@ -1168,7 +1237,9 @@ def build_dataset_splits_from_es_mbp_10(
 # -----------------------------
 # Basic metrics (raw space) for quick checks
 # -----------------------------
-def compute_basic_l2_metrics(ask_p: np.ndarray, ask_v: np.ndarray, bid_p: np.ndarray, bid_v: np.ndarray) -> Dict[str, float]:
+def compute_basic_l2_metrics(
+    ask_p: np.ndarray, ask_v: np.ndarray, bid_p: np.ndarray, bid_v: np.ndarray
+) -> Dict[str, float]:
     spread = ask_p[:, 0] - bid_p[:, 0]
     depth = ask_v.sum(axis=1) + bid_v.sum(axis=1)
     imb = (bid_v.sum(axis=1) - ask_v.sum(axis=1)) / (depth + 1e-8)
@@ -1188,8 +1259,6 @@ __all__ = [
     "build_dataset_splits_from_npz_l2",
     "build_dataset_splits_from_cryptos",
     "build_dataset_splits_from_es_mbp_10",
-    "standardize_params",
-    "standardize_cond",
     "load_l2_npz",
     "fit_standardizer",
     "apply_standardizer",

@@ -15,9 +15,15 @@ htmlcov/
 venv/
 .env
 .env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
 
 # Generated or large project artifacts
-/lesson.md
 /data/
 /paper_datasets/
 /outputs/
@@ -25,8 +31,6 @@ venv/
 /figures/
 /checkpoints/
 /tables/
-/progress_snapshot/
-/safe_resume_patch/
 *.zip
 *.tar
 *.tar.gz
@@ -38,6 +42,7 @@ venv/
 *.log
 .log
 tmp_*
+.review-tools/
 *.jsonl
 build/
 dist/

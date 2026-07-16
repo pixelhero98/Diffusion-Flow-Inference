@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import copy
+from contextlib import contextmanager
+from dataclasses import fields
 from typing import Any, Dict, Mapping
 
 import numpy as np
 import torch
 
+from diffusion_flow_inference.models.config import OTFlowConfig, SampleConfig
 from diffusion_flow_inference.models.otflow_train_val import select_eval_window_starts
-
 
 PRIMARY_METRICS = (
     "score_main",
@@ -43,36 +46,56 @@ def _metric_bundle(result: Mapping[str, Any]) -> Dict[str, float]:
 
 
 def _choose_valid_windows(ds, horizon: int, n_windows: int, seed: int) -> np.ndarray:
-    return select_eval_window_starts(ds, horizon=int(horizon), n_windows=int(n_windows), seed=int(seed))
+    return select_eval_window_starts(
+        ds, horizon=int(horizon), n_windows=int(n_windows), seed=int(seed)
+    )
 
 
-def _sample_cfg_snapshot(cfg) -> Dict[str, Any]:
-    return dict(cfg.to_dict()["sample"])
+@contextmanager
+def temporary_sample_config(
+    model: torch.nn.Module,
+    cfg: OTFlowConfig,
+    **overrides: Any,
+):
+    """Temporarily replace explicit sample sections and restore them on every exit path."""
+    model_cfg = getattr(model, "cfg", None)
+    owners = [cfg]
+    if model_cfg is not None and model_cfg is not cfg:
+        owners.append(model_cfg)
 
-
-def _apply_sample_overrides(model: torch.nn.Module, cfg, **overrides: Any) -> Dict[str, Any]:
-    backup = _sample_cfg_snapshot(cfg)
+    valid_fields = {field.name for field in fields(SampleConfig)}
     clean = {key: value for key, value in overrides.items() if value is not None}
-    if clean:
-        cfg.apply_overrides(**clean)
-        if getattr(model, "cfg", None) is not cfg:
-            model.cfg.apply_overrides(**clean)
-    return backup
+    unknown = sorted(set(clean) - valid_fields)
+    if unknown:
+        raise TypeError(f"Unknown sample config fields: {unknown}")
 
+    snapshots = []
+    for owner in owners:
+        sample = getattr(owner, "sample", None)
+        if not isinstance(sample, SampleConfig):
+            raise TypeError(
+                "temporary_sample_config requires OTFlowConfig.sample to be a SampleConfig."
+            )
+        snapshots.append((owner, copy.deepcopy(sample)))
 
-def _restore_sample_overrides(model: torch.nn.Module, cfg, backup: Mapping[str, Any]) -> None:
-    cfg.apply_overrides(**dict(backup))
-    if getattr(model, "cfg", None) is not cfg:
-        model.cfg.apply_overrides(**dict(backup))
+    try:
+        for owner, snapshot in snapshots:
+            replacement = copy.deepcopy(snapshot)
+            for key, value in clean.items():
+                setattr(replacement, key, value)
+            owner.sample = replacement
+        yield
+    finally:
+        for owner, snapshot in snapshots:
+            owner.sample = snapshot
 
 
 __all__ = [
     "ALL_METRICS",
     "EXTRA_METRICS",
     "PRIMARY_METRICS",
-    "_apply_sample_overrides",
     "_choose_valid_windows",
     "_metric_bundle",
     "_metric_value",
-    "_restore_sample_overrides",
+    "temporary_sample_config",
 ]

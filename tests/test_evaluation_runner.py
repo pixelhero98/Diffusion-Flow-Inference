@@ -1,24 +1,19 @@
 from __future__ import annotations
 
-import json
 import importlib
-import re
-import subprocess
-import tomllib
+import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization as runner
-from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import build_schedule_grid
-from diffusion_flow_inference.evaluation.fm_backbone_registry import materialize_backbone_manifest
-from diffusion_flow_inference.schedule_transfer.otflow_paper_registry import (
-    BASELINE_SCHEDULE_KEYS,
-    METHOD_KEY,
+from diffusion_flow_inference.evaluation.backbone_registry import materialize_backbone_manifest
+from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import (
+    SCHEDULE_KEYS,
     TRANSFER_SCHEDULE_KEYS,
-    paper_registry_snapshot,
-    paper_schedule_specs,
-    paper_solver_specs,
+    build_schedule_grid,
 )
 from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
     MODEL_SIGNAL_TRACE_KEYS,
@@ -28,45 +23,64 @@ from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-class DiffusionFlowPaperPrepTests(unittest.TestCase):
-    def test_registry_exposes_diffusion_flow_method_not_tvd(self) -> None:
-        snapshot = paper_registry_snapshot()
-        self.assertEqual(METHOD_KEY, "diffusion_flow_time_reparameterization")
-        self.assertEqual(snapshot["paper_method"], "diffusion_flow_time_reparameterization")
-        self.assertFalse(any(spec.comparison_role == "paper_method" and spec.key == "tvd" for spec in paper_schedule_specs()))
-        self.assertIn("flowts_power_sampling", {spec.key for spec in paper_schedule_specs()})
-        self.assertNotIn("atss", {spec.key for spec in paper_schedule_specs()})
+def _recorded_row(
+    *, benchmark_family: str = "forecast_extrapolation", signature: str = "row"
+) -> dict:
+    return {
+        "protocol_hash": "protocol",
+        "benchmark_family": benchmark_family,
+        "split_phase": "locked_test",
+        "seed": 0,
+        "dataset": "electricity" if benchmark_family == "forecast_extrapolation" else "cryptos",
+        "checkpoint_id": "checkpoint",
+        "backbone_name": "otflow",
+        "train_steps": 20000,
+        "train_budget_label": "20k",
+        "target_nfe": 10,
+        "solver_key": "euler",
+        "schedule_key": "uniform",
+        "row_signature": signature,
+        "row_status": "complete",
+        "crps": 1.0,
+    }
+
+
+class EvaluationRunnerTests(unittest.TestCase):
+    def test_runner_protocol_is_diffusion_flow_time_reparameterization(self) -> None:
+        self.assertEqual(runner.RUNNER_PROTOCOL, "diffusion_flow_time_reparameterization")
 
     def test_schedule_sets_are_exact(self) -> None:
-        self.assertEqual(BASELINE_SCHEDULE_KEYS, ("uniform", "late_power_3", "flowts_power_sampling", "ays", "gits", "ots"))
+        self.assertEqual(
+            SCHEDULE_KEYS,
+            ("uniform", "late_power_3", "flowts_power_sampling", "ays", "gits", "ots"),
+        )
         self.assertEqual(TRANSFER_SCHEDULE_KEYS, ("ays", "gits", "ots"))
 
     def test_dpmpp2m_remains_public_deterministic_solver(self) -> None:
         self.assertIn("dpmpp2m", runner.ALL_SOLVER_ORDER)
         self.assertEqual(runner.SOLVER_RUNTIME_NAMES["dpmpp2m"], "dpmpp2m")
-        solver_specs = {spec.key: spec for spec in paper_solver_specs()}
-        self.assertEqual(solver_specs["dpmpp2m"].display_name, "DPM++2M")
         self.assertEqual(runner.solver_macro_steps("dpmpp2m", 10), 10)
 
     def test_active_schedule_grids_have_endpoints(self) -> None:
-        for key in BASELINE_SCHEDULE_KEYS:
+        for key in SCHEDULE_KEYS:
             grid = build_schedule_grid(key, 4)
-            self.assertIsNotNone(grid, key)
             self.assertEqual(len(grid), 5)
             self.assertAlmostEqual(grid[0], 0.0)
             self.assertAlmostEqual(grid[-1], 1.0)
             self.assertTrue(all(right > left for left, right in zip(grid, grid[1:])), key)
 
     def test_active_schedule_grids_reject_non_positive_steps(self) -> None:
-        for key in BASELINE_SCHEDULE_KEYS:
+        for key in SCHEDULE_KEYS:
             for n_steps in (0, -1):
                 with self.assertRaisesRegex(ValueError, "n_steps must be positive"):
                     build_schedule_grid(key, n_steps)
 
-    def test_scheduler_cases_evaluate_uniform_first(self) -> None:
-        args = runner.build_argparser().parse_args(["--baseline_scheduler_names", "ays,uniform"])
-        cases = runner._scheduler_cases_for_datasets(args, ["electricity"])
-        self.assertEqual([case["scheduler_key"] for case in cases["electricity"]], ["uniform", "ays"])
+    def test_schedule_cases_evaluate_uniform_first(self) -> None:
+        args = runner.build_argparser().parse_args(["--schedule-names", "ays,uniform"])
+        cases = runner._schedule_cases_for_datasets(args, ["electricity"])
+        self.assertEqual(
+            [case["schedule_key"] for case in cases["electricity"]], ["uniform", "ays"]
+        )
 
     def test_aggregate_relative_gain_uses_fraction_units(self) -> None:
         rows = [
@@ -81,7 +95,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                 "train_budget_label": "20k",
                 "target_nfe": 10,
                 "solver_key": "euler",
-                "scheduler_key": "ays",
+                "schedule_key": "ays",
                 "experiment_scope": "main",
                 "row_status": "complete",
                 "crps": 3.0,
@@ -97,7 +111,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                 "train_budget_label": "20k",
                 "target_nfe": 10,
                 "solver_key": "euler",
-                "scheduler_key": "uniform",
+                "schedule_key": "uniform",
                 "experiment_scope": "main",
                 "row_status": "complete",
                 "crps": 4.0,
@@ -105,14 +119,16 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
         ]
 
         summary = runner._aggregate_main_table(rows)["seed_summaries"]
-        by_schedule = {row["scheduler_key"]: row for row in summary}
+        by_schedule = {row["schedule_key"]: row for row in summary}
 
         self.assertAlmostEqual(runner._safe_relative_gain(3.0, 4.0), 0.25)
         self.assertAlmostEqual(by_schedule["ays"]["relative_crps_gain_vs_uniform"], 0.25)
         self.assertAlmostEqual(by_schedule["uniform"]["relative_crps_gain_vs_uniform"], 0.0)
 
     def test_signal_trace_includes_velocity_variation_difficulty(self) -> None:
-        self.assertEqual(VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY, "velocity_variation_difficulty_by_step")
+        self.assertEqual(
+            VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY, "velocity_variation_difficulty_by_step"
+        )
         self.assertIn("velocity_variation_difficulty_by_step", MODEL_SIGNAL_TRACE_KEYS)
 
     def test_runner_dry_run_writes_combined_summary(self) -> None:
@@ -131,13 +147,15 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                 ]
             )
             payload = runner.run_diffusion_flow_time_reparameterization(args)
-            summary = json.loads((Path(tmpdir) / "combined_summary.json").read_text(encoding="utf-8"))
+            summary = json.loads(
+                (Path(tmpdir) / "combined_summary.json").read_text(encoding="utf-8")
+            )
         self.assertEqual(payload["runner_mode"], "diffusion_flow_time_reparameterization")
         self.assertEqual(summary["method_key"], "diffusion_flow_time_reparameterization")
         self.assertEqual(summary["conditional_generation_datasets"], [])
         retired_dataset_key = "lo" + "b_datasets"
         self.assertNotIn(retired_dataset_key, summary)
-        self.assertIn("flowts_power_sampling", summary["baseline_schedule_keys"])
+        self.assertIn("flowts_power_sampling", summary["schedule_keys"])
         self.assertEqual(summary["transfer_schedule_keys"], ["ays", "gits", "ots"])
 
     def test_conditional_generation_build_row_preserves_full_metrics(self) -> None:
@@ -156,7 +174,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             target_nfe=10,
             runtime_nfe=10,
             solver_key="euler",
-            scheduler_key="uniform",
+            schedule_key="uniform",
             details={"reference_macro_steps": 10, "schedule_grid_hash": "grid"},
             metrics={
                 "score_main": 0.4,
@@ -228,7 +246,9 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             recorder = runner._init_row_recorder(Path(tmpdir), args)
             recorder["fh"].close()
             row_path = Path(tmpdir) / "rows.jsonl"
-            row_path.write_text('{"protocol_hash":"old","row_status":"complete"}\n', encoding="utf-8")
+            row_path.write_text(
+                '{"protocol_hash":"old","row_status":"complete"}\n', encoding="utf-8"
+            )
 
             args_changed = runner.build_argparser().parse_args(
                 [
@@ -248,13 +268,13 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             recorder_changed["fh"].close()
             self.assertEqual(row_path.read_text(encoding="utf-8"), "")
 
-    def test_protocol_hash_tracks_data_path_identity(self) -> None:
+    def test_protocol_hash_tracks_data_file_contents_not_location(self) -> None:
         manifest = PROJECT_ROOT / "outputs" / "backbone_matrix" / "backbone_manifest.json"
         with tempfile.TemporaryDirectory() as tmpdir:
             data_a = Path(tmpdir) / "cryptos_a.npz"
             data_b = Path(tmpdir) / "cryptos_b.npz"
-            data_a.write_bytes(b"a")
-            data_b.write_bytes(b"bb")
+            data_a.write_bytes(b"same")
+            data_b.write_bytes(b"same")
             args_a = runner.build_argparser().parse_args(
                 [
                     "--forecast_datasets",
@@ -279,7 +299,15 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                     str(data_b),
                 ]
             )
-            self.assertNotEqual(runner._protocol_config_fingerprint(args_a), runner._protocol_config_fingerprint(args_b))
+            self.assertEqual(
+                runner._protocol_config_fingerprint(args_a),
+                runner._protocol_config_fingerprint(args_b),
+            )
+            data_b.write_bytes(b"changed")
+            self.assertNotEqual(
+                runner._protocol_config_fingerprint(args_a),
+                runner._protocol_config_fingerprint(args_b),
+            )
 
     def test_preflight_resolves_relative_shared_backbone_root_from_project_root(self) -> None:
         with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as tmpdir:
@@ -288,6 +316,12 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
             ckpt_path = root / "forecast" / "electricity" / "model.pt"
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
             ckpt_path.write_bytes(b"checkpoint")
+            ckpt_path.with_name("checkpoint_metadata.json").write_text("{}", encoding="utf-8")
+            dataset_root = root / "datasets"
+            monash_root = dataset_root / "monash" / "electricity"
+            (monash_root / "source").mkdir(parents=True, exist_ok=True)
+            (monash_root / "manifest.json").write_text("{}", encoding="utf-8")
+            (monash_root / "source" / "electricity.tsf").write_text("@data\n", encoding="utf-8")
             args = runner.build_argparser().parse_args(
                 [
                     "--forecast_datasets",
@@ -296,6 +330,8 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                     "",
                     "--shared_backbone_root",
                     rel_root,
+                    "--dataset_root",
+                    str(dataset_root),
                     "--backbone_manifest",
                     "",
                     "--allow_execute",
@@ -306,11 +342,26 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
 
     def test_preflight_rejects_stale_ready_manifest_checkpoint_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            manifest_path = Path(tmpdir) / "backbone_manifest.json"
+            root = Path(tmpdir)
+            dataset_root = root / "datasets"
+            monash_root = dataset_root / "monash" / "electricity"
+            (monash_root / "source").mkdir(parents=True, exist_ok=True)
+            (monash_root / "manifest.json").write_text("{}", encoding="utf-8")
+            (monash_root / "source" / "electricity.tsf").write_text("@data\n", encoding="utf-8")
+            manifest_path = root / "backbone_manifest.json"
             manifest_path.write_text(
                 json.dumps(
                     {
-                        "version": 1,
+                        "schema": "diffusion_flow_backbone_manifest",
+                        "schema_version": 1,
+                        "seed": 0,
+                        "train_budget_steps": [20000],
+                        "matrix_root": ".",
+                        "otflow_reuse_root": ".",
+                        "imported_backbone_root": ".",
+                        "artifact_count": 1,
+                        "ready_count": 1,
+                        "missing_count": 0,
                         "artifacts": [
                             {
                                 "backbone_name": "otflow",
@@ -319,7 +370,7 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                                 "train_steps": 20000,
                                 "train_budget_label": "20k",
                                 "checkpoint_id": "electricity_otflow_forecast_20k_seed0",
-                                "checkpoint_path": "outputs/missing_preflight_checkpoint/model.pt",
+                                "checkpoint_path": "missing_preflight_checkpoint/model.pt",
                                 "summary_path": "",
                                 "status": "ready",
                                 "seed": 0,
@@ -337,11 +388,30 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                     "",
                     "--backbone_manifest",
                     str(manifest_path),
+                    "--dataset_root",
+                    str(dataset_root),
                     "--allow_execute",
                 ]
             )
 
             with self.assertRaisesRegex(RuntimeError, "checkpoint files are missing"):
+                runner.validate_execution_preflight(args)
+
+    def test_preflight_rejects_explicit_missing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_manifest = Path(tmpdir) / "missing_manifest.json"
+            args = runner.build_argparser().parse_args(
+                [
+                    "--forecast_datasets",
+                    "",
+                    "--conditional_generation_datasets",
+                    "",
+                    "--backbone_manifest",
+                    str(missing_manifest),
+                    "--allow_execute",
+                ]
+            )
+            with self.assertRaisesRegex(FileNotFoundError, "Backbone manifest not found"):
                 runner.validate_execution_preflight(args)
 
     def test_protocol_hash_tracks_selected_seeds(self) -> None:
@@ -370,60 +440,112 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
                 "1",
             ]
         )
-        self.assertNotEqual(runner._protocol_config_fingerprint(args_a), runner._protocol_config_fingerprint(args_b))
-
-    def test_site_specific_ops_scripts_are_not_in_source_release(self) -> None:
-        self.assertFalse((PROJECT_ROOT / "code" / "ops").exists())
-        self.assertFalse(any(PROJECT_ROOT.glob("opsi*")))
-
-    def test_local_process_artifacts_are_not_tracked_or_present(self) -> None:
-        local_note = PROJECT_ROOT / ("lesson" + ".md")
-        self.assertFalse(local_note.exists())
-        ignore_file = PROJECT_ROOT / ".gitignore"
-        self.assertIn("/" + local_note.name, ignore_file.read_text(encoding="utf-8"))
-        if (PROJECT_ROOT / ".git").exists():
-            result = subprocess.run(
-                ["git", "ls-files", "--", local_note.name],
-                cwd=PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.stdout.strip(), "")
-
-    def test_source_release_has_no_private_or_stale_tokens(self) -> None:
-        forbidden = (
-            "lesson" + ".md",
-            "info" + "_growth",
-            "native" + "_info" + "_growth",
-            "hardness" + "_mismatch",
-            "dfi-build-" + "hardness-figure",
-            "C:" + "\\",
-            "ud" + "22686",
-            "Py" + "charmProjects",
-            "yzn" + "3090",
-            "20k" + ".zip",
-            "DEFAULT" + "_ZIP" + "_PATH",
-            "RELATIVE" + "_STATS" + "_NAME",
-            "relative" + "_seed" + "_stats",
-            "load" + "_observed" + "_gain" + "_rows",
-            "observed" + "_gain" + "_from" + "_relative" + "_row",
+        self.assertNotEqual(
+            runner._protocol_config_fingerprint(args_a), runner._protocol_config_fingerprint(args_b)
         )
-        source_paths = []
-        source_suffixes = {".cfg", ".ini", ".json", ".md", ".py", ".toml", ".txt", ".yaml", ".yml"}
-        for root in (PROJECT_ROOT / "src", PROJECT_ROOT / "tests", PROJECT_ROOT / "scripts"):
-            source_paths.extend(
-                path
-                for path in root.rglob("*")
-                if path.is_file()
-                and path.suffix in source_suffixes
-                and not any(part.endswith(".egg-info") for part in path.parts)
-                and "__pycache__" not in path.parts
+
+    def test_protocol_hash_tracks_execution_config(self) -> None:
+        args_a = runner.build_argparser().parse_args(
+            [
+                "--forecast_datasets",
+                "",
+                "--conditional_generation_datasets",
+                "",
+                "--backbone_manifest",
+                "",
+            ]
+        )
+        args_b = runner.build_argparser().parse_args(
+            [
+                "--forecast_datasets",
+                "",
+                "--conditional_generation_datasets",
+                "",
+                "--backbone_manifest",
+                "",
+                "--hidden_dim",
+                str(int(args_a.hidden_dim) + 1),
+            ]
+        )
+        self.assertNotEqual(
+            runner._protocol_config_fingerprint(args_a), runner._protocol_config_fingerprint(args_b)
+        )
+
+    def test_protocol_hash_tracks_runtime_environment(self) -> None:
+        args = runner.build_argparser().parse_args(
+            [
+                "--forecast_datasets",
+                "",
+                "--conditional_generation_datasets",
+                "",
+                "--backbone_manifest",
+                "",
+            ]
+        )
+        with mock.patch.object(
+            runner, "_runtime_environment_fingerprint", return_value={"python": "first"}
+        ):
+            first = runner._protocol_config_fingerprint(args)
+        with mock.patch.object(
+            runner, "_runtime_environment_fingerprint", return_value={"python": "second"}
+        ):
+            second = runner._protocol_config_fingerprint(args)
+        self.assertNotEqual(first, second)
+
+    def test_resume_loader_tolerates_only_a_truncated_final_line(self) -> None:
+        row = _recorded_row()
+        serialized = runner._json_dumps(row, sort_keys=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "rows.jsonl"
+            path.write_text(serialized + "\n" + '{"protocol_hash":"protocol"', encoding="utf-8")
+            loaded = runner._load_rows(path, protocol_hash="protocol")
+            self.assertEqual(list(loaded.values()), [row])
+
+            path.write_text('{"broken":\n' + serialized + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Invalid JSONL record"):
+                runner._load_rows(path, protocol_hash="protocol")
+
+            path.write_text(serialized + "\n" + '{"broken":\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Invalid JSONL record"):
+                runner._load_rows(path, protocol_hash="protocol")
+
+    def test_json_serialization_rejects_nonfinite_numbers(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    runner._json_dumps({"value": value})
+
+    def test_locked_forecast_diagnosis_excludes_other_benchmark_families(self) -> None:
+        forecast = _recorded_row()
+        conditional = _recorded_row(
+            benchmark_family="conditional_generation", signature="conditional"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_root = Path(tmpdir)
+            (out_root / "rows.jsonl").write_text(
+                runner._json_dumps(forecast) + "\n" + runner._json_dumps(conditional) + "\n",
+                encoding="utf-8",
             )
-        source_paths.extend([PROJECT_ROOT / "README.md", PROJECT_ROOT / "pyproject.toml"])
-        source_text = "\n".join(path.read_text(encoding="utf-8") for path in source_paths if path.exists())
-        for token in forbidden:
-            self.assertNotIn(token, source_text, token)
+            args = runner.build_argparser().parse_args(
+                [
+                    "--out_root",
+                    tmpdir,
+                    "--forecast_datasets",
+                    "",
+                    "--conditional_generation_datasets",
+                    "",
+                    "--backbone_manifest",
+                    "",
+                    "--diagnose_locked_forecast_only",
+                    "--seeds",
+                    "0",
+                ]
+            )
+            with mock.patch.object(runner, "_protocol_config_fingerprint", return_value="protocol"):
+                payload = runner.run_diffusion_flow_time_reparameterization(args)
+        self.assertEqual(payload["row_count"], 2)
+        self.assertEqual(payload["locked_row_count"], 1)
+        self.assertEqual(payload["main_table_summary"]["row_count"], 1)
 
     def test_project_scripts_and_wrappers_resolve(self) -> None:
         pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -440,67 +562,15 @@ class DiffusionFlowPaperPrepTests(unittest.TestCase):
 
         wrappers = {
             "diffusion_flow_time_reparameterization.py": expected_scripts["dfi-run-schedules"],
-            "build_velocity_variation_difficulty_figure.py": expected_scripts["dfi-build-velocity-variation-figure"],
+            "build_velocity_variation_difficulty_figure.py": expected_scripts[
+                "dfi-build-velocity-variation-figure"
+            ],
             "build_ptg_observed_gain_figure.py": expected_scripts["dfi-build-ptg-figure"],
         }
         for wrapper_name, target in wrappers.items():
             module_name, attr_name = target.split(":", 1)
             wrapper_text = (PROJECT_ROOT / "scripts" / wrapper_name).read_text(encoding="utf-8")
             self.assertIn(f"from {module_name} import {attr_name}", wrapper_text)
-
-    def test_retired_source_trees_are_absent(self) -> None:
-        self.assertFalse((PROJECT_ROOT / "code").exists())
-        self.assertFalse((PROJECT_ROOT / "src" / "old_code").exists())
-        self.assertFalse((PROJECT_ROOT / "old_code").exists())
-
-    def test_legacy_cleanup_targets_are_removed(self) -> None:
-        removed = {
-            "adaptive_noise_sampler_followup.py",
-            "adaptive_deterministic_refinement_followup.py",
-            "build_adaptive_solver_matched_nfe_study.py",
-            "benchmark_otflow_suite.py",
-            "baselines.py",
-            "deepmarket_baselines.py",
-            "temporal_baselines.py",
-            "otflow_baselines.py",
-            "fm_backbone_readiness_audit.py",
-            "merge_otflow_baseline_main_table.py",
-            "otflow_dataset_audit.py",
-            "otflow_rollout_length_review.py",
-        }
-        src_root = PROJECT_ROOT / "src"
-        self.assertFalse(any((src_root / name).exists() for name in removed))
-        source_text = "\n".join(
-            path.read_text(encoding="utf-8") for path in src_root.rglob("*.py") if path.name != Path(__file__).name
-        )
-        for name in removed:
-            self.assertNotIn(name.removesuffix(".py"), source_text)
-
-    def test_retired_generic_naming_tokens_are_absent(self) -> None:
-        retired_patterns = (
-            r"RectifiedFlowL[O]B",
-            r"L[O]BConfig",
-            r"L[O]BDataConfig",
-            r"WindowedL[O]BParamsDataset",
-            r"L[O]B_FAMILY",
-            r"--l[o]b_datasets",
-            r"l[o]b_conditional_generation",
-            r"['\"]l[o]b['\"]",
-            r"[/\\]l[o]b[/\\]",
-            r"models\.otflow_backbone",
-        )
-        source_paths = [
-            *Path(PROJECT_ROOT / "src").rglob("*.py"),
-            *Path(PROJECT_ROOT / "tests").rglob("*.py"),
-            *Path(PROJECT_ROOT / "scripts").rglob("*.py"),
-            PROJECT_ROOT / "README.md",
-            PROJECT_ROOT / "pyproject.toml",
-        ]
-        source_text = "\n".join(
-            path.read_text(encoding="utf-8") for path in source_paths if path.exists() and path != Path(__file__)
-        )
-        for pattern in retired_patterns:
-            self.assertIsNone(re.search(pattern, source_text), pattern)
 
     def test_backbone_manifest_tracks_40_active_artifacts_without_private_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

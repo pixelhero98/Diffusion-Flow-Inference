@@ -14,7 +14,6 @@ from diffusion_flow_inference.data.otflow_medical_datasets import (
 )
 from diffusion_flow_inference.models.config import OTFlowConfig
 
-
 PAPER_BACKBONE_PRESETS: Mapping[str, Mapping[str, object]] = {
     "cryptos": {
         "levels": 10,

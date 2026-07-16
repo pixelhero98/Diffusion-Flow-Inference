@@ -1,26 +1,35 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "diffusion-flow-inference"
 version = "0.1.0"
-description = "Fixed-schedule diffusion-flow time reparameterization experiments for OTFlow backbones."
+description = "Fixed-schedule diffusion-flow time reparameterization toolkit for OTFlow backbones."
 readme = "README.md"
 requires-python = ">=3.11"
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "Diffusion-Flow-Inference contributors"}]
 dependencies = [
-  "numpy==2.4.2",
-  "scipy>=1.11",
-  "matplotlib>=3.8,<4",
-  "torch==2.10.0",
-  "wfdb>=4.1",
-  "pyedflib>=0.1.38",
+  "numpy>=1.26,<3",
+  "scipy>=1.11,<2",
+  "torch>=2.2,<3",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+medical = ["pyedflib>=0.1.38"]
+plot = ["matplotlib>=3.8,<4"]
+test = [
+  "build>=1.2",
+  "matplotlib>=3.8,<4",
+  "pytest>=8",
+  "ruff==0.15.21",
+]
+
+[project.urls]
+Repository = "https://github.com/pixelhero98/Diffusion-Flow-Inference"
+Issues = "https://github.com/pixelhero98/Diffusion-Flow-Inference/issues"
 
 [project.scripts]
 dfi-run-schedules = "diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization:main"
@@ -32,3 +41,15 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "diffusion_flow_inference.schedule_transfer" = ["otflow_external_schedule_catalog.json"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".review-tools"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

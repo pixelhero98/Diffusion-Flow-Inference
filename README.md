@@ -1,73 +1,71 @@
 # Diffusion-Flow-Inference
 
-Diffusion-Flow-Inference evaluates fixed schedules after mapping them onto normalized flow time for fixed OTFlow backbones. The active schedules are `uniform`, `late_power_3`, `flowts_power_sampling`, `ays`, `gits`, and `ots`; the transferred diffusion schedules are `ays`, `gits`, and `ots`.
+Diffusion-Flow-Inference is a source-first toolkit for evaluating fixed ODE solver
+schedules after mapping them to normalized flow time. It provides reusable OTFlow
+models, data adapters, schedule construction, evaluation support, and diagnostic
+figure builders.
 
-## Source Layout
+The built-in schedules are `uniform`, `late_power_3`, `flowts_power_sampling`,
+`ays`, `gits`, and `ots`. The last three are transferred diffusion schedules.
 
-- `src/diffusion_flow_inference/data/`: Monash, conditional-generation, medical dataset definitions, experiment plans, and project paths.
-- `src/diffusion_flow_inference/models/`: OTFlow configuration, conditioning, backbone modules, training, and model utilities.
-- `src/diffusion_flow_inference/schedule_transfer/`: schedule grids, registries, table helpers, signal traces, and diagnostics.
-- `src/diffusion_flow_inference/evaluation/`: checkpoint loading, runner support, solver mappings, and sampling helpers.
-- `src/diffusion_flow_inference/visualization/`: fixed-schedule diagnostic figure builders.
-- `scripts/`: thin command-line wrappers for the packaged entry points.
+## Installation
 
-## Data, Outputs, And Backbones
-
-This repository is source-only. Local runs may use `data/`, `paper_datasets/`, `outputs/`, and `.venv/`, but those large or machine-local directories are intentionally ignored and are not part of the public source tree.
-
-Generated outputs are written to:
-
-```text
-outputs/
-```
-
-The backbone manifest path is:
-
-```text
-outputs/backbone_matrix/backbone_manifest.json
-```
-
-A prepared local backbone matrix should report 40 ready checkpoint artifacts and 0 missing artifacts.
-
-## Environment
-
-Install the package in editable mode:
+Python 3.11 or newer is required. Install the core package in editable mode:
 
 ```bash
 python -m pip install -e .
 ```
 
-For development and validation, install the test extra:
+Optional dependencies are grouped by use case:
 
 ```bash
-python -m pip install -e ".[test]"
+python -m pip install -e ".[plot]"       # diagnostic figures
+python -m pip install -e ".[medical]"    # Sleep-EDF preparation
+python -m pip install -e ".[test]"       # development and validation
 ```
 
-Or install runtime dependencies directly:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Conda users can create the environment with:
+`requirements.txt` installs the plotting and medical-data extras for convenience.
+Conda users can create the environment and then install the package without
+re-resolving its dependencies:
 
 ```bash
 conda env create -f environment.conda.yml
+conda activate diffusion-flow-inference
+python -m pip install -e . --no-deps
 ```
 
-Raw medical dataset preparation requires `OTFLOW_MEDICAL_STAGING_ROOT` to point at the local staging directory. Prepared dataset evaluation uses the processed files in `data/`.
+## Project layout
 
-## Validation Checks
+- `src/diffusion_flow_inference/data/`: dataset definitions, preparation, and paths
+- `src/diffusion_flow_inference/models/`: configuration, conditioning, OTFlow, and metrics
+- `src/diffusion_flow_inference/schedule_transfer/`: schedule grids and diagnostics
+- `src/diffusion_flow_inference/evaluation/`: artifact loading and evaluation support
+- `src/diffusion_flow_inference/visualization/`: diagnostic figure builders
+- `scripts/`: thin wrappers for the installed command-line tools
+
+## Data and model artifacts
+
+The repository does not distribute datasets, prepared arrays, model checkpoints, or
+generated results. By default, relative paths are resolved from the current working
+directory. Set `DFI_PROJECT_ROOT` when commands are launched elsewhere:
 
 ```bash
-python -m compileall -q src tests scripts
-python -m pytest -q
-python -m pip check
+export DFI_PROJECT_ROOT=/path/to/your/workspace
 ```
 
-## Command-Line Tools
+Forecast dataset manifests and backbone manifests store relative paths so their
+directories can be moved together. The default backbone manifest location is
+`outputs/backbone_matrix/backbone_manifest.json`; loading rejects unsupported schemas,
+inconsistent counts, and missing required fields.
 
-Inspect the installed command-line interfaces with:
+Sleep-EDF evaluation is read-only and requires an explicitly prepared `.npz` file plus
+its metadata. Raw preparation is a separate step: set `DFI_MEDICAL_STAGING_ROOT`, then
+call `prepare_sleep_edf_dataset(...)` from
+`diffusion_flow_inference.data.otflow_medical_datasets`.
+
+## Usage
+
+Inspect the installed interfaces with:
 
 ```bash
 dfi-run-schedules --help
@@ -75,8 +73,42 @@ dfi-build-velocity-variation-figure --help
 dfi-build-ptg-figure --help
 ```
 
-Dry-run prep from the repository root accepts project-relative paths:
+Without `--allow_execute`, the schedule runner summarizes its requested setup without
+loading models or running evaluations. For example:
 
 ```bash
-dfi-run-schedules --forecast_datasets '' --conditional_generation_datasets '' --backbone_manifest outputs/backbone_matrix/backbone_manifest.json
+dfi-run-schedules \
+  --forecast_datasets '' \
+  --conditional_generation_datasets '' \
+  --schedule-names uniform,ays
 ```
+
+Actual evaluation additionally requires `--allow_execute` and the requested datasets,
+manifest, and checkpoint artifacts. Results default to
+`outputs/diffusion_flow_time_reparameterization/` and can be redirected with
+`--out_root`.
+
+Schedule grids are also available as a small Python API:
+
+```python
+from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import (
+    build_schedule_grid,
+)
+
+time_grid = build_schedule_grid("ays", n_steps=10)
+```
+
+## Validation
+
+The local and CI checks are:
+
+```bash
+ruff check .
+ruff format --check .
+python -m compileall -q src tests scripts
+python -m pytest -q
+python -m build
+python -m pip check
+```
+
+See `CONTRIBUTING.md` for contribution and portability guidelines.

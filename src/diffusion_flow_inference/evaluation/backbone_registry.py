@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
+import os
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,11 +14,7 @@ from diffusion_flow_inference.data.otflow_experiment_plan import (
     PAPER_FORECAST_DATASETS,
     experiment_plan_by_key,
 )
-from diffusion_flow_inference.data.otflow_medical_constants import (
-    LONG_TERM_HEADERED_ECG_DATASET_KEY,
-    SLEEP_EDF_DATASET_KEY,
-    long_term_headered_ecg_manifest_path,
-)
+from diffusion_flow_inference.data.otflow_medical_constants import SLEEP_EDF_DATASET_KEY
 from diffusion_flow_inference.data.otflow_paths import (
     backbone_manifest_path,
     project_backbone_matrix_root,
@@ -33,9 +31,9 @@ CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE = "transformer"
 BACKBONE_SEED = 0
 TRAIN_BUDGET_STEPS: Tuple[int, ...] = (4000, 8000, 12000, 16000, 20000)
 STANDARD_ARTIFACT_SUMMARY_NAME = "artifact_summary.json"
-BACKBONE_MANIFEST_SCHEMA = "fm_backbone_manifest"
+BACKBONE_MANIFEST_SCHEMA = "diffusion_flow_backbone_manifest"
+BACKBONE_MANIFEST_SCHEMA_VERSION = 1
 BACKBONE_READINESS_AUDIT_SCHEMA = "backbone_readiness"
-IMPORTED_EXTERNAL_SOURCE_KIND = "imported_external"
 
 ACTIVE_FORECAST_BACKBONE_BUDGETS: Mapping[str, Tuple[int, ...]] = {
     "san_francisco_traffic": (4000, 8000, 12000, 16000, 20000),
@@ -66,7 +64,6 @@ class BackboneArtifactSpec:
     source_kind: str = "planned"
     metadata_path: Optional[str] = None
     field_network_type: Optional[str] = None
-    notes: Optional[str] = None
     model_cond_dim: Optional[int] = None
     compatibility_error: Optional[str] = None
 
@@ -114,19 +111,21 @@ def build_backbone_checkpoint_id(
     return "_".join(parts)
 
 
-def _active_budget_map(benchmark_family: str) -> Mapping[str, Tuple[int, ...]]:
-    if str(benchmark_family) == FORECAST_FAMILY:
-        return ACTIVE_FORECAST_BACKBONE_BUDGETS
-    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY:
-        return ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS
-    raise ValueError(f"Unsupported benchmark_family={benchmark_family}")
+def _forecast_artifact_root(
+    matrix_root: Path, backbone_name: str, dataset_key: str, train_steps: int
+) -> Path:
+    return (
+        matrix_root
+        / str(backbone_name)
+        / "forecast"
+        / train_budget_label(int(train_steps))
+        / str(dataset_key)
+    )
 
 
-def _forecast_artifact_root(matrix_root: Path, backbone_name: str, dataset_key: str, train_steps: int) -> Path:
-    return matrix_root / str(backbone_name) / "forecast" / train_budget_label(int(train_steps)) / str(dataset_key)
-
-
-def _conditional_generation_artifact_root(matrix_root: Path, backbone_name: str, dataset_key: str, train_steps: int) -> Path:
+def _conditional_generation_artifact_root(
+    matrix_root: Path, backbone_name: str, dataset_key: str, train_steps: int
+) -> Path:
     return (
         matrix_root
         / str(backbone_name)
@@ -149,7 +148,9 @@ def expected_artifact_root(
     if str(benchmark_family) == FORECAST_FAMILY:
         return _forecast_artifact_root(root, str(backbone_name), str(dataset_key), int(train_steps))
     if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY:
-        return _conditional_generation_artifact_root(root, str(backbone_name), str(dataset_key), int(train_steps))
+        return _conditional_generation_artifact_root(
+            root, str(backbone_name), str(dataset_key), int(train_steps)
+        )
     raise ValueError(f"Unsupported benchmark_family={benchmark_family}")
 
 
@@ -208,11 +209,15 @@ def _metadata_cond_dim(metadata: Mapping[str, Any]) -> int:
     return int(metadata.get("cond_dim") or 0)
 
 
-def _checkpoint_signature(checkpoint_path: Path) -> Tuple[Optional[Dict[str, int | str]], Optional[str]]:
+def _checkpoint_signature(
+    checkpoint_path: Path,
+) -> Tuple[Optional[Dict[str, int | str]], Optional[str]]:
     try:
         import torch
 
-        from diffusion_flow_inference.evaluation.otflow_evaluation_support import load_checkpoint_model
+        from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
+            load_checkpoint_model,
+        )
 
         model, cfg = load_checkpoint_model(Path(checkpoint_path), torch.device("cpu"))
         del model
@@ -277,25 +282,33 @@ def _otflow_artifact_compatibility(
         except KeyError:
             errors.append("metadata.field_network_type is missing or invalid")
         else:
-            if observed_field != str(field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE):
+            if observed_field != str(
+                field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
+            ):
                 errors.append(
                     f"metadata.field_network_type={observed_field!r} != expected {str(field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
                 )
 
     cond_dim = _metadata_cond_dim(metadata)
     if int(model_cond_dim) != int(cond_dim):
-        errors.append(f"metadata cond_dim={int(cond_dim)} != checkpoint model.cond_dim={int(model_cond_dim)}")
+        errors.append(
+            f"metadata cond_dim={int(cond_dim)} != checkpoint model.cond_dim={int(model_cond_dim)}"
+        )
     if int(signature["train_steps"]) != int(train_steps):
-        errors.append(f"checkpoint train.steps={int(signature['train_steps'])} != expected {int(train_steps)}")
+        errors.append(
+            f"checkpoint train.steps={int(signature['train_steps'])} != expected {int(train_steps)}"
+        )
     if int(signature["history_len"]) != int(spec.history_len):
-        errors.append(f"checkpoint history_len={int(signature['history_len'])} != expected {int(spec.history_len)}")
+        errors.append(
+            f"checkpoint history_len={int(signature['history_len'])} != expected {int(spec.history_len)}"
+        )
     if int(signature["future_block_len"]) != int(spec.future_block_len):
         errors.append(
             f"checkpoint future_block_len={int(signature['future_block_len'])} != expected {int(spec.future_block_len)}"
         )
-    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY and str(signature["field_network_type"]) != str(
-        field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE
-    ):
+    if str(benchmark_family) == CONDITIONAL_GENERATION_FAMILY and str(
+        signature["field_network_type"]
+    ) != str(field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE):
         errors.append(
             f"checkpoint field_network_type={str(signature['field_network_type'])!r} != expected {str(field_network_type or CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE)!r}"
         )
@@ -336,7 +349,7 @@ def _existing_matrix_artifact(
         benchmark_family=str(benchmark_family),
         dataset_key=str(dataset_key),
         train_steps=int(train_steps),
-        field_network_type=str(field_network_type or expected_field_network_type) if (field_network_type or expected_field_network_type) else None,
+        field_network_type=expected_field_network_type,
     )
     checkpoint_id = None if metadata is None else metadata.get("checkpoint_id")
     summary_path = _existing_summary_path(
@@ -369,7 +382,6 @@ def _existing_matrix_artifact(
         source_kind="matrix_output",
         metadata_path=str(paths["metadata_path"]),
         field_network_type=None if field_network_type is None else str(field_network_type),
-        notes=compatibility_error,
         model_cond_dim=model_cond_dim,
         compatibility_error=compatibility_error,
     )
@@ -439,7 +451,6 @@ def _existing_otflow_reuse_artifact(
         source_kind="reused_shared_20k",
         metadata_path=str(metadata_path),
         field_network_type=field_network_type,
-        notes=compatibility_error,
         model_cond_dim=model_cond_dim,
         compatibility_error=compatibility_error,
     )
@@ -466,18 +477,28 @@ def _rewrite_normalized_json_payload(
     checkpoint_path: Path,
     metadata_path: Path,
     summary_path: Path,
-    normalized_from: Path,
+    document_path: Path,
 ) -> Dict[str, Any]:
+    def relative_path(target: Path) -> str:
+        try:
+            return Path(
+                os.path.relpath(target.resolve(), start=document_path.parent.resolve())
+            ).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot make artifact path portable across filesystem roots: {target} relative to {document_path}."
+            ) from exc
+
     data = dict(payload)
     if "checkpoint_path" in data:
-        data["checkpoint_path"] = str(checkpoint_path)
+        data["checkpoint_path"] = relative_path(checkpoint_path)
     if "checkpoint_metadata_path" in data:
-        data["checkpoint_metadata_path"] = str(metadata_path)
+        data["checkpoint_metadata_path"] = relative_path(metadata_path)
     if "metadata_path" in data:
-        data["metadata_path"] = str(metadata_path)
+        data["metadata_path"] = relative_path(metadata_path)
     if "summary_path" in data:
-        data["summary_path"] = str(summary_path)
-    data["normalized_from"] = str(normalized_from)
+        data["summary_path"] = relative_path(summary_path)
+    data.pop("normalized_from", None)
     return data
 
 
@@ -498,7 +519,7 @@ def _copy_json_with_rewritten_paths(
         checkpoint_path=checkpoint_path,
         metadata_path=metadata_path,
         summary_path=summary_path,
-        normalized_from=src_path.parent,
+        document_path=dst_path,
     )
     dst_path.write_text(json.dumps(rewritten, indent=2), encoding="utf-8")
 
@@ -566,7 +587,7 @@ def _normalize_imported_artifact(
             checkpoint_path=paths["checkpoint_path"],
             metadata_path=paths["metadata_path"],
             summary_path=paths["summary_path"],
-            normalized_from=source_dir,
+            document_path=paths["summary_path"],
         )
         paths["summary_path"].write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
     return True
@@ -696,6 +717,134 @@ def _iter_target_specs(
                 train_steps=int(train_steps),
                 seed=int(seed),
             )
+
+
+_MANIFEST_ROOT_PATH_FIELDS = ("matrix_root", "otflow_reuse_root", "imported_backbone_root")
+_MANIFEST_ARTIFACT_PATH_FIELDS = ("checkpoint_path", "summary_path", "metadata_path")
+
+
+def _manifest_relative_path(path_value: str, manifest_path: Path) -> str:
+    try:
+        return Path(
+            os.path.relpath(Path(path_value).resolve(), start=manifest_path.parent.resolve())
+        ).as_posix()
+    except ValueError as exc:
+        raise ValueError(
+            f"Cannot serialize path on a different filesystem root from manifest {manifest_path}: {path_value}"
+        ) from exc
+
+
+def _serialize_backbone_manifest(payload: Mapping[str, Any], manifest_path: Path) -> Dict[str, Any]:
+    serialized = copy.deepcopy(dict(payload))
+    for field_name in _MANIFEST_ROOT_PATH_FIELDS:
+        value = str(serialized.get(field_name, "") or "").strip()
+        if value:
+            serialized[field_name] = _manifest_relative_path(value, manifest_path)
+    for artifact in serialized.get("artifacts", []):
+        for field_name in _MANIFEST_ARTIFACT_PATH_FIELDS:
+            value = str(artifact.get(field_name, "") or "").strip()
+            if value:
+                artifact[field_name] = _manifest_relative_path(value, manifest_path)
+    return serialized
+
+
+def _validate_serialized_backbone_manifest(payload: Any, manifest_path: Path) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError(f"Backbone manifest must contain a JSON object: {manifest_path}")
+    if str(payload.get("schema", "")) != BACKBONE_MANIFEST_SCHEMA:
+        raise ValueError(f"Unsupported backbone manifest schema in {manifest_path}.")
+    try:
+        schema_version = int(payload.get("schema_version", -1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid backbone manifest schema version in {manifest_path}.") from exc
+    if schema_version != BACKBONE_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported backbone manifest schema version in {manifest_path}.")
+
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError(f"Backbone manifest artifacts must be a list: {manifest_path}")
+    required_artifact_fields = {
+        "backbone_name",
+        "benchmark_family",
+        "dataset_key",
+        "train_steps",
+        "checkpoint_id",
+        "checkpoint_path",
+        "summary_path",
+        "status",
+    }
+    identities = set()
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            raise ValueError(f"Backbone manifest artifact {index} must be a JSON object.")
+        missing_fields = sorted(required_artifact_fields.difference(artifact))
+        if missing_fields:
+            raise ValueError(
+                f"Backbone manifest artifact {index} is missing fields: {', '.join(missing_fields)}"
+            )
+        try:
+            train_steps = int(artifact["train_steps"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Backbone manifest artifact {index} has invalid train_steps."
+            ) from exc
+        identity = (
+            str(artifact["backbone_name"]),
+            str(artifact["benchmark_family"]),
+            str(artifact["dataset_key"]),
+            train_steps,
+        )
+        if identity in identities:
+            raise ValueError(f"Backbone manifest contains duplicate artifact identity: {identity}")
+        identities.add(identity)
+        if str(artifact["status"]) not in {"ready", "missing", "invalid"}:
+            raise ValueError(f"Backbone manifest artifact {index} has an invalid status.")
+        for field_name in _MANIFEST_ARTIFACT_PATH_FIELDS:
+            value = str(artifact.get(field_name, "") or "").strip()
+            if value and Path(value).is_absolute():
+                raise ValueError(
+                    f"Backbone manifest artifact {index} field {field_name} must be relative to the manifest."
+                )
+
+    for field_name in _MANIFEST_ROOT_PATH_FIELDS:
+        value = str(payload.get(field_name, "") or "").strip()
+        if not value:
+            raise ValueError(f"Backbone manifest is missing {field_name}.")
+        if Path(value).is_absolute():
+            raise ValueError(
+                f"Backbone manifest field {field_name} must be relative to the manifest."
+            )
+
+    try:
+        artifact_count = int(payload.get("artifact_count", -1))
+        ready_count = int(payload.get("ready_count", -1))
+        missing_count = int(payload.get("missing_count", -1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Backbone manifest counts must be integers: {manifest_path}") from exc
+    observed_ready = sum(str(artifact["status"]) == "ready" for artifact in artifacts)
+    if (
+        artifact_count != len(artifacts)
+        or ready_count != observed_ready
+        or missing_count != len(artifacts) - observed_ready
+    ):
+        raise ValueError(f"Backbone manifest counts are inconsistent: {manifest_path}")
+    return payload
+
+
+def _resolve_backbone_manifest_paths(
+    payload: Mapping[str, Any], manifest_path: Path
+) -> Dict[str, Any]:
+    resolved = copy.deepcopy(dict(payload))
+    for field_name in _MANIFEST_ROOT_PATH_FIELDS:
+        resolved[field_name] = str((manifest_path.parent / str(resolved[field_name])).resolve())
+    for artifact in resolved["artifacts"]:
+        for field_name in _MANIFEST_ARTIFACT_PATH_FIELDS:
+            value = str(artifact.get(field_name, "") or "").strip()
+            if value:
+                artifact[field_name] = str((manifest_path.parent / value).resolve())
+    return resolved
+
+
 def materialize_backbone_manifest(
     *,
     matrix_root: str | Path | None = None,
@@ -710,7 +859,9 @@ def materialize_backbone_manifest(
     resolved_import_root = Path(imported_backbone_root or imported_backbones_root()).resolve()
     artifacts: List[Dict[str, Any]] = []
     ready_count = 0
-    for planned in _iter_target_specs(matrix_root=resolved_matrix_root, seed=int(seed), budget_steps=budget_steps):
+    for planned in _iter_target_specs(
+        matrix_root=resolved_matrix_root, seed=int(seed), budget_steps=budget_steps
+    ):
         resolved = _existing_matrix_artifact(
             resolved_matrix_root,
             backbone_name=str(planned.backbone_name),
@@ -733,6 +884,7 @@ def materialize_backbone_manifest(
         artifacts.append(artifact.to_dict())
     payload = {
         "schema": BACKBONE_MANIFEST_SCHEMA,
+        "schema_version": BACKBONE_MANIFEST_SCHEMA_VERSION,
         "seed": int(seed),
         "train_budget_steps": [int(value) for value in budget_steps],
         "matrix_root": str(resolved_matrix_root),
@@ -745,13 +897,20 @@ def materialize_backbone_manifest(
     }
     target_path = Path(write_path or backbone_manifest_path()).resolve()
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    serialized = _serialize_backbone_manifest(payload, target_path)
+    _validate_serialized_backbone_manifest(serialized, target_path)
+    target_path.write_text(json.dumps(serialized, indent=2), encoding="utf-8")
     return payload
 
 
 def load_backbone_manifest(path: str | Path) -> Dict[str, Any]:
     resolved = Path(path).resolve()
-    return json.loads(resolved.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Unable to read backbone manifest: {resolved}") from exc
+    validated = _validate_serialized_backbone_manifest(payload, resolved)
+    return _resolve_backbone_manifest_paths(validated, resolved)
 
 
 def find_backbone_artifact(
@@ -786,21 +945,18 @@ def build_runtime_probe(
     resolved_dataset_root = Path(dataset_root or project_paper_dataset_root()).resolve()
     resolved_sleep_path = Path(sleep_edf_path or sleep_edf_data_path()).resolve()
     monash_root = resolved_dataset_root / "monash"
-    import_names = ("numpy", "torch", "wfdb", "pyedflib")
-    imports = {
-        name: bool(importlib.util.find_spec(name) is not None)
-        for name in import_names
-    }
+    import_names = ("numpy", "torch", "pyedflib")
+    imports = {name: bool(importlib.util.find_spec(name) is not None) for name in import_names}
     forecast_dataset_presence = {
         str(dataset_key): bool((monash_root / str(dataset_key) / "manifest.json").exists())
         for dataset_key in PAPER_FORECAST_DATASETS
-        if str(dataset_key) != LONG_TERM_HEADERED_ECG_DATASET_KEY
     }
     dataset_presence = {
         "monash_manifests": forecast_dataset_presence,
-        LONG_TERM_HEADERED_ECG_DATASET_KEY: bool(long_term_headered_ecg_manifest_path(resolved_dataset_root).exists()),
         SLEEP_EDF_DATASET_KEY: bool(resolved_sleep_path.exists()),
-        "cryptos_npz": bool((project_data_root() / "cryptos_binance_spot_monthly_1s_l10.npz").exists()),
+        "cryptos_npz": bool(
+            (project_data_root() / "cryptos_binance_spot_monthly_1s_l10.npz").exists()
+        ),
         "es_mbp_10_npz": bool((project_data_root() / "es_mbp_10.npz").exists()),
     }
     return {
@@ -840,7 +996,9 @@ def build_backbone_readiness_audit(
         "manifest_path": str(Path(write_path or backbone_manifest_path()).resolve()),
         "manifest": manifest,
         "normalization": normalization,
-        "runtime_probe": build_runtime_probe(dataset_root=dataset_root, sleep_edf_path=sleep_edf_path),
+        "runtime_probe": build_runtime_probe(
+            dataset_root=dataset_root, sleep_edf_path=sleep_edf_path
+        ),
     }
     return readiness
 
@@ -849,13 +1007,13 @@ __all__ = [
     "ACTIVE_FORECAST_BACKBONE_BUDGETS",
     "ACTIVE_CONDITIONAL_GENERATION_BACKBONE_BUDGETS",
     "BACKBONE_MANIFEST_SCHEMA",
+    "BACKBONE_MANIFEST_SCHEMA_VERSION",
     "BACKBONE_NAME_OTFLOW",
     "BACKBONE_READINESS_AUDIT_SCHEMA",
     "CONDITIONAL_GENERATION_FAMILY",
     "BACKBONE_SEED",
     "CONDITIONAL_GENERATION_FIELD_NETWORK_TYPE",
     "FORECAST_FAMILY",
-    "IMPORTED_EXTERNAL_SOURCE_KIND",
     "STANDARD_ARTIFACT_SUMMARY_NAME",
     "TRAIN_BUDGET_STEPS",
     "BackboneArtifactSpec",

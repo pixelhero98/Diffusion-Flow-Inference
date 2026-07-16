@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import time
@@ -9,11 +10,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
 from diffusion_flow_inference.data.otflow_paths import project_root
+from diffusion_flow_inference.schedule_transfer.diffusion_flow_schedules import build_schedule_grid
+from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
+    VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY as VELOCITY_VARIATION_SIGNAL_TRACE_KEY,
+)
 
 PROJECT_ROOT = project_root()
 PTG_OUTPUT_ROOT = PROJECT_ROOT / "outputs"
@@ -27,7 +32,6 @@ PTG_FIGURE_DIR = PTG_OUTPUT_ROOT / "figures"
 PTG_FIGURE_PNG_PATH = PTG_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.png"
 PTG_FIGURE_PDF_PATH = PTG_FIGURE_DIR / "ptg_vs_observed_gain_forecast_20k_times_600dpi.pdf"
 
-VELOCITY_VARIATION_SIGNAL_TRACE_KEY = "velocity_variation_difficulty_by_step"
 ORACLE_LOCAL_ERROR_TRACE_KEY = "oracle_local_error_by_step"
 LOCAL_DEFECT_TRACE_KEY = "validation_local_defect_trace"
 VELOCITY_VARIATION_TRACE_KEY = "validation_velocity_variation_difficulty_trace"
@@ -118,7 +122,10 @@ def _json_default(value: Any) -> Any:
 
 def write_json(payload: Mapping[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, default=_json_default) + "\n",
+        encoding="utf-8",
+    )
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -204,7 +211,9 @@ def schedule_density_on_reference_grid(
             if float(schedule[cursor + 1]) >= right_f - 1e-14:
                 break
             cursor += 1
-        rho[ref_idx] = max(float(total) / max(float(ref_widths[ref_idx]), 1e-14), float(min_density))
+        rho[ref_idx] = max(
+            float(total) / max(float(ref_widths[ref_idx]), 1e-14), float(min_density)
+        )
     integral = float(np.sum(ref_widths * rho))
     return rho, integral
 
@@ -232,7 +241,9 @@ def reverse_schedule_grid(schedule_grid: Sequence[float]) -> List[float]:
     reversed_grid = 1.0 - grid[::-1]
     reversed_grid[0] = 0.0
     reversed_grid[-1] = 1.0
-    return [float(x) for x in validate_time_grid(reversed_grid, name="reversed_schedule_grid").tolist()]
+    return [
+        float(x) for x in validate_time_grid(reversed_grid, name="reversed_schedule_grid").tolist()
+    ]
 
 
 def local_defect_trace_from_oracle(
@@ -265,10 +276,15 @@ def ptg_from_trace(
     solver_order_p: float,
     density_floor_eta: float = 0.0,
 ) -> PtgResult:
-    kappa, widths, _eps_h, kappa_integral = normalize_hardness_for_ptg(hardness, reference_time_grid)
+    kappa, widths, _eps_h, kappa_integral = normalize_hardness_for_ptg(
+        hardness, reference_time_grid
+    )
     rho, rho_integral = schedule_density_on_reference_grid(schedule_grid, reference_time_grid)
-    if float(density_floor_eta) > 0.0:
-        rho, rho_integral = stabilize_density(rho, reference_time_grid, eta=float(density_floor_eta))
+    density_floor = float(density_floor_eta)
+    if density_floor < 0.0 or density_floor > 1.0:
+        raise ValueError(f"density_floor_eta must lie in [0, 1], got {density_floor_eta}.")
+    if density_floor > 0.0:
+        rho, rho_integral = stabilize_density(rho, reference_time_grid, eta=density_floor)
     p = float(solver_order_p)
     if p <= 0.0:
         raise ValueError(f"solver_order_p must be positive, got {solver_order_p}.")
@@ -301,7 +317,12 @@ def _select_indices(length: int, n_windows: int, seed: int) -> List[int]:
         n_windows = length
     rng = np.random.default_rng(int(seed))
     replace = n_windows > length
-    return [int(x) for x in rng.choice(np.arange(length, dtype=np.int64), size=n_windows, replace=replace).tolist()]
+    return [
+        int(x)
+        for x in rng.choice(
+            np.arange(length, dtype=np.int64), size=n_windows, replace=replace
+        ).tolist()
+    ]
 
 
 def _project_relative_path(raw_path: str) -> Path:
@@ -312,11 +333,15 @@ def _project_relative_path(raw_path: str) -> Path:
 
 
 def _runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
-    from diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization import build_argparser
+    from diffusion_flow_inference.evaluation.diffusion_flow_time_reparameterization import (
+        build_argparser,
+    )
 
     datasets = parse_csv(str(getattr(args, "datasets", ",".join(DATASET_ORDER))))
     solvers = parse_csv(str(getattr(args, "solvers", ",".join(SOLVER_ORDER))))
-    target_nfes = parse_int_csv(str(getattr(args, "target_nfes", ",".join(str(nfe) for nfe in TARGET_NFES))))
+    target_nfes = parse_int_csv(
+        str(getattr(args, "target_nfes", ",".join(str(nfe) for nfe in TARGET_NFES)))
+    )
     seeds = parse_int_csv(str(getattr(args, "seeds", ",".join(str(seed) for seed in PTG_SEEDS))))
     argv = [
         "--out_root",
@@ -340,7 +365,9 @@ def _runner_cli_args(args: argparse.Namespace) -> argparse.Namespace:
         "--eval_windows_val",
         str(int(getattr(args, "val_windows", PTG_VALIDATION_WINDOW_COUNT))),
     ]
-    backbone_manifest = str(getattr(args, "backbone_manifest", "outputs/backbone_matrix/backbone_manifest.json"))
+    backbone_manifest = str(
+        getattr(args, "backbone_manifest", "outputs/backbone_matrix/backbone_manifest.json")
+    )
     if backbone_manifest.strip():
         argv.extend(["--backbone_manifest", str(_project_relative_path(backbone_manifest))])
     return build_argparser().parse_args(argv)
@@ -356,11 +383,7 @@ def solver_runtime_name(solver_key: str) -> str:
 
 
 def build_fixed_schedule_grid(schedule_key: str, runtime_nfe: int) -> List[float]:
-    from diffusion_flow_inference.schedule_transfer.otflow_paper_registry import build_schedule_grid
-
     grid = build_schedule_grid(str(schedule_key), int(runtime_nfe))
-    if grid is None:
-        raise ValueError(f"Unable to build schedule grid for {schedule_key!r}.")
     arr = validate_time_grid(grid, name=f"{schedule_key}_grid")
     expected_len = int(runtime_nfe) + 1
     if arr.size != expected_len:
@@ -379,13 +402,14 @@ def solver_order_for_ptg(solver_key: str) -> float:
 
 def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
     import torch
+
+    from diffusion_flow_inference.data.otflow_paths import project_paper_dataset_root
     from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
         collect_forecast_calibration,
         load_forecast_checkpoint_splits,
         resolve_reference_macro_steps,
         solver_macro_steps,
     )
-    from diffusion_flow_inference.data.otflow_paths import project_paper_dataset_root
 
     datasets = parse_csv(str(args.datasets))
     solvers = parse_csv(str(args.solvers))
@@ -484,20 +508,30 @@ def collect_payload(args: argparse.Namespace) -> Dict[str, Any]:
                                 "validation_velocity_variation_difficulty_trace": trace,
                                 "validation_oracle_local_error_trace": oracle_trace,
                                 "validation_local_defect_trace": local_defect_trace,
-                                "velocity_variation_scale": float(calibration["velocity_variation_scale"]),
-                                "base_velocity_variation_scale": float(calibration["base_velocity_variation_scale"]),
-                                "signal_validation_spearman": calibration.get("signal_correlations_vs_oracle", {})
+                                "velocity_variation_scale": float(
+                                    calibration["velocity_variation_scale"]
+                                ),
+                                "base_velocity_variation_scale": float(
+                                    calibration["base_velocity_variation_scale"]
+                                ),
+                                "signal_validation_spearman": calibration.get(
+                                    "signal_correlations_vs_oracle", {}
+                                )
                                 .get(VELOCITY_VARIATION_SIGNAL_TRACE_KEY, {})
                                 .get("spearman"),
                             }
                         )
                     if reference_time_grid is None:
-                        raise ValueError(f"No reference grid collected for {dataset}/{solver_key}/NFE={target_nfe}.")
+                        raise ValueError(
+                            f"No reference grid collected for {dataset}/{solver_key}/NFE={target_nfe}."
+                        )
                     mean_velocity_variation = mean_trace(
                         velocity_variation_traces,
                         name=f"{dataset}_{solver_key}_{target_nfe}_velocity_variation_difficulty",
                     )
-                    mean_oracle = mean_trace(oracle_traces, name=f"{dataset}_{solver_key}_{target_nfe}_oracle")
+                    mean_oracle = mean_trace(
+                        oracle_traces, name=f"{dataset}_{solver_key}_{target_nfe}_oracle"
+                    )
                     mean_local_defect = mean_trace(
                         local_defect_traces,
                         name=f"{dataset}_{solver_key}_{target_nfe}_local_defect",
@@ -566,6 +600,11 @@ def _eval_dataset_for_integration(ds: Any, *, test_windows: int, seed: int) -> T
     return _IndexSubset(ds, indices), int(len(indices))
 
 
+def _example_seed(seed: int, example_index: int) -> int:
+    digest = hashlib.sha256(f"{int(seed)}:{int(example_index)}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], byteorder="big", signed=False)
+
+
 def _sample_forecast_endpoints_norm(
     model: Any,
     ds: Any,
@@ -578,42 +617,50 @@ def _sample_forecast_endpoints_norm(
     batch_size: int = 64,
 ) -> Tuple[List[np.ndarray], float]:
     import torch
-    from diffusion_flow_inference.evaluation.otflow_sampling_support import _apply_sample_overrides, _restore_sample_overrides
+
+    from diffusion_flow_inference.evaluation.otflow_sampling_support import temporary_sample_config
     from diffusion_flow_inference.models.otflow_train_val import seed_all
 
     device = cfg.train.device
     endpoints: List[np.ndarray] = []
     elapsed = 0.0
     effective_batch_size = max(1, int(batch_size))
-    backup = _apply_sample_overrides(model, cfg, solver=str(solver_name), time_grid=tuple(float(x) for x in time_grid))
-    try:
+    with temporary_sample_config(
+        model,
+        cfg,
+        solver=str(solver_name),
+        time_grid=tuple(float(x) for x in time_grid),
+    ):
         for batch_start in range(0, int(len(ds)), effective_batch_size):
             batch_end = min(int(len(ds)), int(batch_start) + effective_batch_size)
-            hist_rows = []
             for example_idx in range(batch_start, batch_end):
                 hist_t, _, _, _ = ds[int(example_idx)]
-                hist_rows.append(hist_t)
-            hist = torch.stack(hist_rows, dim=0).to(device).float()
-            draw_seed = int(seed) + 1000 * int(batch_start)
-            seed_all(draw_seed)
-            if device.type == "cuda" and torch.cuda.is_available():
-                torch.cuda.synchronize(device)
-            start = time.perf_counter()
-            pred_norm = model.sample_future(hist, steps=int(runtime_nfe), solver=str(solver_name))
-            if device.type == "cuda" and torch.cuda.is_available():
-                torch.cuda.synchronize(device)
-            elapsed += float(time.perf_counter() - start)
-            pred_arr = pred_norm.detach().cpu().numpy().astype(np.float64)
-            for batch_idx in range(int(pred_arr.shape[0])):
-                endpoints.append(pred_arr[batch_idx].reshape(-1))
-    finally:
-        _restore_sample_overrides(model, cfg, backup)
+                hist = hist_t[None, ...].to(device).float()
+                seed_all(_example_seed(int(seed), int(example_idx)))
+                if device.type == "cuda" and torch.cuda.is_available():
+                    torch.cuda.synchronize(device)
+                start = time.perf_counter()
+                pred_norm = model.sample_future(
+                    hist, steps=int(runtime_nfe), solver=str(solver_name)
+                )
+                if device.type == "cuda" and torch.cuda.is_available():
+                    torch.cuda.synchronize(device)
+                elapsed += float(time.perf_counter() - start)
+                pred_arr = pred_norm.detach().cpu().numpy().astype(np.float64)
+                if pred_arr.shape[0] != 1 or not np.all(np.isfinite(pred_arr)):
+                    raise ValueError(
+                        "Forecast endpoint sampling must return one finite prediction per example; "
+                        f"got shape {pred_arr.shape} for example {int(example_idx)}."
+                    )
+                endpoints.append(pred_arr[0].reshape(-1))
     return endpoints, elapsed
 
 
 def _mean_endpoint_l2(endpoints: Sequence[np.ndarray], references: Sequence[np.ndarray]) -> float:
     if len(endpoints) != len(references):
-        raise ValueError(f"Endpoint/reference count mismatch: {len(endpoints)} vs {len(references)}.")
+        raise ValueError(
+            f"Endpoint/reference count mismatch: {len(endpoints)} vs {len(references)}."
+        )
     if not endpoints:
         raise ValueError("Cannot compute integration error from an empty endpoint list.")
     errors: List[float] = []
@@ -621,9 +668,19 @@ def _mean_endpoint_l2(endpoints: Sequence[np.ndarray], references: Sequence[np.n
         endpoint_arr = np.asarray(endpoint, dtype=np.float64).reshape(-1)
         reference_arr = np.asarray(reference, dtype=np.float64).reshape(-1)
         if endpoint_arr.shape != reference_arr.shape:
-            raise ValueError(f"Endpoint/reference shape mismatch at example {idx}: {endpoint_arr.shape} vs {reference_arr.shape}.")
-        errors.append(float(np.linalg.norm(endpoint_arr - reference_arr, ord=2)))
-    return float(np.mean(np.asarray(errors, dtype=np.float64)))
+            raise ValueError(
+                f"Endpoint/reference shape mismatch at example {idx}: {endpoint_arr.shape} vs {reference_arr.shape}."
+            )
+        if not np.all(np.isfinite(endpoint_arr)) or not np.all(np.isfinite(reference_arr)):
+            raise ValueError(f"Endpoint/reference values must be finite at example {idx}.")
+        error = float(np.linalg.norm(endpoint_arr - reference_arr, ord=2))
+        if not math.isfinite(error):
+            raise ValueError(f"Endpoint integration error must be finite at example {idx}.")
+        errors.append(error)
+    mean_error = float(np.mean(np.asarray(errors, dtype=np.float64)))
+    if not math.isfinite(mean_error):
+        raise ValueError("Mean endpoint integration error must be finite.")
+    return mean_error
 
 
 def _dense_uniform_grid(n_steps: int) -> List[float]:
@@ -633,14 +690,131 @@ def _dense_uniform_grid(n_steps: int) -> List[float]:
     return [float(i) / float(steps) for i in range(steps + 1)]
 
 
+def _stable_payload_hash(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=_json_default
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _integration_cell_key(row: Mapping[str, Any]) -> Tuple[str, str, int, int]:
+    return (
+        str(row["dataset"]),
+        str(row["solver_key"]),
+        int(row["target_nfe"]),
+        int(row["evaluation_seed"]),
+    )
+
+
+def _integration_resume_row_key(row: Mapping[str, Any]) -> Tuple[str, str, str, int, int, str]:
+    protocol_hash = str(row.get("protocol_hash", "")).strip()
+    if not protocol_hash:
+        raise ValueError(
+            "Existing integration rows do not contain a protocol_hash and cannot be resumed safely. "
+            "Rerun without --resume to replace the file."
+        )
+    if str(row.get("row_status", "")) != "ok":
+        raise ValueError("Only completed integration rows with row_status='ok' can be resumed.")
+    dataset, solver_key, target_nfe, evaluation_seed = _integration_cell_key(row)
+    return (
+        protocol_hash,
+        dataset,
+        solver_key,
+        target_nfe,
+        evaluation_seed,
+        str(row["schedule_key"]),
+    )
+
+
+def _validated_resume_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    datasets: Sequence[str],
+    solvers: Sequence[str],
+    target_nfes: Sequence[int],
+    seeds: Sequence[int],
+    schedules: Sequence[str],
+) -> List[Dict[str, Any]]:
+    selected: List[Dict[str, Any]] = []
+    seen = set()
+    dataset_set = {str(value) for value in datasets}
+    solver_set = {str(value) for value in solvers}
+    nfe_set = {int(value) for value in target_nfes}
+    seed_set = {int(value) for value in seeds}
+    schedule_set = {str(value) for value in schedules}
+    for raw_row in rows:
+        row = dict(raw_row)
+        cell_key = _integration_cell_key(row)
+        if (
+            cell_key[0] not in dataset_set
+            or cell_key[1] not in solver_set
+            or cell_key[2] not in nfe_set
+            or cell_key[3] not in seed_set
+            or str(row["schedule_key"]) not in schedule_set
+        ):
+            continue
+        row_key = _integration_resume_row_key(row)
+        if row_key in seen:
+            raise ValueError(f"Duplicate integration resume row for {row_key}.")
+        seen.add(row_key)
+        selected.append(row)
+    return selected
+
+
+def _integration_protocol_hash(
+    *,
+    args: argparse.Namespace,
+    checkpoint: Mapping[str, Any],
+    dataset: str,
+    solver_key: str,
+    solver_name: str,
+    target_nfe: int,
+    runtime_nfe: int,
+    dense_reference_steps: int,
+    dense_reference_grid: Sequence[float],
+    schedule_grids: Mapping[str, Sequence[float]],
+    evaluation_subset_hash: str,
+    eval_examples: int,
+    seeds: Sequence[int],
+) -> str:
+    return _stable_payload_hash(
+        {
+            "artifact": "ptg_integration_error",
+            "dataset": str(dataset),
+            "checkpoint_id": str(checkpoint["checkpoint_id"]),
+            "backbone_name": str(checkpoint["backbone_name"]),
+            "train_steps": int(checkpoint["train_steps"]),
+            "train_budget_label": str(checkpoint["train_budget_label"]),
+            "solver_key": str(solver_key),
+            "solver_name": str(solver_name),
+            "target_nfe": int(target_nfe),
+            "runtime_nfe": int(runtime_nfe),
+            "dense_reference_steps": int(dense_reference_steps),
+            "dense_reference_grid": [float(value) for value in dense_reference_grid],
+            "dense_reference_macro_factor": float(args.dense_reference_macro_factor),
+            "schedule_grids": {
+                str(key): [float(value) for value in grid]
+                for key, grid in sorted(schedule_grids.items())
+            },
+            "evaluation_subset_hash": str(evaluation_subset_hash),
+            "eval_examples": int(eval_examples),
+            "evaluation_seeds": sorted(int(seed) for seed in seeds),
+            "integration_batch_size": int(args.integration_batch_size),
+            "endpoint_space": "normalized_model_output",
+            "device": str(args.device),
+        }
+    )
+
+
 def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, Any]]:
     import torch
+
+    from diffusion_flow_inference.data.otflow_paths import project_paper_dataset_root
     from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
         load_forecast_checkpoint_splits,
         resolve_reference_macro_steps,
         solver_macro_steps,
     )
-    from diffusion_flow_inference.data.otflow_paths import project_paper_dataset_root
 
     datasets = parse_csv(str(args.datasets))
     solvers = parse_csv(str(args.solvers))
@@ -657,7 +831,9 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
     unknown_datasets = [dataset for dataset in datasets if dataset not in DATASET_ORDER]
     unknown_solvers = [solver for solver in solvers if solver not in SOLVER_ORDER]
     unknown_nfes = [nfe for nfe in target_nfes if int(nfe) not in TARGET_NFES]
-    unknown_schedules = [schedule for schedule in schedules if schedule not in INTEGRATION_SCHEDULES]
+    unknown_schedules = [
+        schedule for schedule in schedules if schedule not in INTEGRATION_SCHEDULES
+    ]
     if unknown_datasets:
         raise ValueError(f"Unsupported datasets: {unknown_datasets}")
     if unknown_solvers:
@@ -673,25 +849,19 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
     device = torch.device(str(args.device))
     dataset_root = project_paper_dataset_root()
     rows: List[Dict[str, Any]] = []
-    completed_seed_keys = set()
     rows_csv = Path(args.rows_csv) if getattr(args, "rows_csv", None) is not None else None
     if bool(getattr(args, "resume", False)) and rows_csv is not None and rows_csv.exists():
         with rows_csv.open("r", newline="", encoding="utf-8") as handle:
-            rows = [dict(row) for row in csv.DictReader(handle)]
-        grouped_schedules: Dict[Tuple[str, str, int, int], set] = defaultdict(set)
-        for row in rows:
-            grouped_schedules[
-                (
-                    str(row["dataset"]),
-                    str(row["solver_key"]),
-                    int(row["target_nfe"]),
-                    int(row["evaluation_seed"]),
-                )
-            ].add(str(row["schedule_key"]))
-        required = set(schedules)
-        completed_seed_keys = {key for key, seen in grouped_schedules.items() if required.issubset(seen)}
+            rows = _validated_resume_rows(
+                [dict(row) for row in csv.DictReader(handle)],
+                datasets=datasets,
+                solvers=solvers,
+                target_nfes=target_nfes,
+                seeds=seeds,
+                schedules=schedules,
+            )
     total_seed_cells = int(len(datasets) * len(solvers) * len(target_nfes) * len(seeds))
-    completed_seed_cells = len(completed_seed_keys)
+    completed_seed_cells = 0
     for dataset in datasets:
         checkpoint = load_forecast_checkpoint_splits(
             cli_args=cli_args,
@@ -708,6 +878,15 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
             test_windows=int(args.test_windows),
             seed=10_000 + DATASET_ORDER.index(str(dataset)),
         )
+        if isinstance(test_ds, _IndexSubset):
+            evaluation_subset_payload: Dict[str, Any] = {
+                "mode": "indices",
+                "source_length": int(len(splits["test"])),
+                "indices": list(test_ds.indices),
+            }
+        else:
+            evaluation_subset_payload = {"mode": "all", "source_length": int(len(test_ds))}
+        evaluation_subset_hash = _stable_payload_hash(evaluation_subset_payload)
         with torch.no_grad():
             for solver_key in solvers:
                 runtime_solver = solver_runtime_name(str(solver_key))
@@ -725,10 +904,39 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
                         schedule_key: build_fixed_schedule_grid(str(schedule_key), int(runtime_nfe))
                         for schedule_key in schedules
                     }
+                    protocol_hash = _integration_protocol_hash(
+                        args=args,
+                        checkpoint=checkpoint,
+                        dataset=str(dataset),
+                        solver_key=str(solver_key),
+                        solver_name=str(runtime_solver),
+                        target_nfe=int(target_nfe),
+                        runtime_nfe=int(runtime_nfe),
+                        dense_reference_steps=int(dense_reference_steps),
+                        dense_reference_grid=dense_reference_grid,
+                        schedule_grids=schedule_grids,
+                        evaluation_subset_hash=evaluation_subset_hash,
+                        eval_examples=int(eval_examples),
+                        seeds=seeds,
+                    )
                     for seed in seeds:
                         seed = int(seed)
-                        seed_key = (str(dataset), str(solver_key), int(target_nfe), int(seed))
-                        if seed_key in completed_seed_keys:
+                        cell_key = (str(dataset), str(solver_key), int(target_nfe), int(seed))
+                        rows = [
+                            row
+                            for row in rows
+                            if _integration_cell_key(row) != cell_key
+                            or str(row.get("protocol_hash", "")) == protocol_hash
+                        ]
+                        current_rows = [
+                            row
+                            for row in rows
+                            if _integration_cell_key(row) == cell_key
+                            and str(row.get("protocol_hash", "")) == protocol_hash
+                        ]
+                        current_schedule_keys = {str(row["schedule_key"]) for row in current_rows}
+                        if current_schedule_keys == set(schedules):
+                            completed_seed_cells += 1
                             print(
                                 json.dumps(
                                     {
@@ -745,6 +953,15 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
                                 flush=True,
                             )
                             continue
+                        if current_rows:
+                            rows = [
+                                row
+                                for row in rows
+                                if not (
+                                    _integration_cell_key(row) == cell_key
+                                    and str(row.get("protocol_hash", "")) == protocol_hash
+                                )
+                            ]
                         reference_endpoints, reference_seconds = _sample_forecast_endpoints_norm(
                             model,
                             test_ds,
@@ -768,7 +985,9 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
                                 seed=int(seed),
                                 batch_size=int(args.integration_batch_size),
                             )
-                            schedule_errors[str(schedule_key)] = _mean_endpoint_l2(endpoints, reference_endpoints)
+                            schedule_errors[str(schedule_key)] = _mean_endpoint_l2(
+                                endpoints, reference_endpoints
+                            )
                             schedule_seconds[str(schedule_key)] = float(elapsed_seconds)
                         uniform_error = float(schedule_errors["uniform"])
                         if uniform_error <= 0.0 or not math.isfinite(uniform_error):
@@ -778,9 +997,20 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
                             )
                         for schedule_key in schedules:
                             integration_error = float(schedule_errors[str(schedule_key)])
+                            if integration_error < 0.0 or not math.isfinite(integration_error):
+                                raise ValueError(
+                                    f"Integration error must be finite and non-negative for {dataset}/{solver_key}/"
+                                    f"NFE={target_nfe}/seed={seed}/schedule={schedule_key}, got {integration_error}."
+                                )
                             gain = 100.0 * (1.0 - integration_error / uniform_error)
+                            if not math.isfinite(gain):
+                                raise ValueError(
+                                    f"Integration gain must be finite for {dataset}/{solver_key}/NFE={target_nfe}/"
+                                    f"seed={seed}/schedule={schedule_key}, got {gain}."
+                                )
                             rows.append(
                                 {
+                                    "protocol_hash": protocol_hash,
                                     "dataset": str(dataset),
                                     "split_phase": "locked_test",
                                     "checkpoint_id": str(checkpoint["checkpoint_id"]),
@@ -791,12 +1021,21 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
                                     "target_nfe": int(target_nfe),
                                     "runtime_nfe": int(runtime_nfe),
                                     "dense_reference_macro_steps": int(dense_reference_steps),
-                                    "dense_reference_macro_factor": float(args.dense_reference_macro_factor),
+                                    "dense_reference_macro_factor": float(
+                                        args.dense_reference_macro_factor
+                                    ),
+                                    "dense_reference_grid_hash": _stable_payload_hash(
+                                        dense_reference_grid
+                                    ),
+                                    "evaluation_subset_hash": evaluation_subset_hash,
                                     "evaluation_seed": int(seed),
                                     "solver_key": str(solver_key),
                                     "solver_name": str(runtime_solver),
                                     "schedule_key": str(schedule_key),
                                     "schedule_name": SCHEDULE_LABELS[str(schedule_key)],
+                                    "schedule_grid_hash": _stable_payload_hash(
+                                        schedule_grids[str(schedule_key)]
+                                    ),
                                     "integration_error": float(integration_error),
                                     "uniform_integration_error": float(uniform_error),
                                     "integration_gain_percent": float(gain),
@@ -832,9 +1071,29 @@ def collect_integration_error_rows(args: argparse.Namespace) -> List[Dict[str, A
 
 
 def aggregate_integration_error_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    groups: Dict[Tuple[str, int, str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    groups: Dict[Tuple[str, str, int, str, str], List[Mapping[str, Any]]] = defaultdict(list)
+    seen_rows = set()
     for row in rows:
-        key = (str(row["dataset"]), int(row["target_nfe"]), str(row["solver_key"]), str(row["schedule_key"]))
+        resume_key = _integration_resume_row_key(row)
+        if resume_key in seen_rows:
+            raise ValueError(f"Duplicate integration row for {resume_key}.")
+        seen_rows.add(resume_key)
+        metric_values = (
+            float(row["integration_error"]),
+            float(row["uniform_integration_error"]),
+            float(row["integration_gain_percent"]),
+        )
+        if not all(math.isfinite(value) for value in metric_values):
+            raise ValueError(f"Integration row {resume_key} contains non-finite metrics.")
+        if metric_values[0] < 0.0 or metric_values[1] <= 0.0:
+            raise ValueError(f"Integration row {resume_key} contains invalid error values.")
+        key = (
+            str(row["protocol_hash"]),
+            str(row["dataset"]),
+            int(row["target_nfe"]),
+            str(row["solver_key"]),
+            str(row["schedule_key"]),
+        )
         groups[key].append(row)
     stats_rows: List[Dict[str, Any]] = []
     for key in sorted(groups):
@@ -842,10 +1101,15 @@ def aggregate_integration_error_rows(rows: Sequence[Mapping[str, Any]]) -> List[
         first = group[0]
         seeds = sorted(int(row["evaluation_seed"]) for row in group)
         errors = np.asarray([float(row["integration_error"]) for row in group], dtype=np.float64)
-        uniform_errors = np.asarray([float(row["uniform_integration_error"]) for row in group], dtype=np.float64)
-        gains = np.asarray([float(row["integration_gain_percent"]) for row in group], dtype=np.float64)
+        uniform_errors = np.asarray(
+            [float(row["uniform_integration_error"]) for row in group], dtype=np.float64
+        )
+        gains = np.asarray(
+            [float(row["integration_gain_percent"]) for row in group], dtype=np.float64
+        )
         stats_rows.append(
             {
+                "protocol_hash": str(first["protocol_hash"]),
                 "dataset": str(first["dataset"]),
                 "split_phase": str(first["split_phase"]),
                 "checkpoint_id": str(first["checkpoint_id"]),
@@ -907,6 +1171,19 @@ def load_integration_gain_rows(path: Path) -> Dict[Tuple[str, int, str, str], Di
         key = (dataset, target_nfe, solver_key, schedule_key)
         if key in selected:
             raise ValueError(f"Duplicate integration gain row for {key}.")
+        numeric_values = {
+            "integration_error_mean": float(row["integration_error_mean"]),
+            "integration_error_std": float(row["integration_error_std"]),
+            "uniform_integration_error_mean": float(row["uniform_integration_error_mean"]),
+            "uniform_integration_error_std": float(row["uniform_integration_error_std"]),
+            "integration_gain_percent_mean": float(row["integration_gain_percent_mean"]),
+            "integration_gain_percent_std": float(row["integration_gain_percent_std"]),
+        }
+        if not all(math.isfinite(value) for value in numeric_values.values()):
+            raise ValueError(f"Integration gain row for {key} contains non-finite metrics.")
+        endpoint_space = str(row["endpoint_space"])
+        if endpoint_space != "normalized_model_output":
+            raise ValueError(f"Unsupported endpoint_space={endpoint_space!r} for {key}.")
         selected[key] = {
             "dataset": dataset,
             "target_nfe": int(target_nfe),
@@ -915,15 +1192,10 @@ def load_integration_gain_rows(path: Path) -> Dict[Tuple[str, int, str, str], Di
             "schedule_key": schedule_key,
             "n_seeds": int(row["n_seeds"]),
             "seed_values": str(row["seed_values"]),
-            "integration_error_mean": float(row["integration_error_mean"]),
-            "integration_error_std": float(row["integration_error_std"]),
-            "uniform_integration_error_mean": float(row["uniform_integration_error_mean"]),
-            "uniform_integration_error_std": float(row["uniform_integration_error_std"]),
-            "integration_gain_percent_mean": float(row["integration_gain_percent_mean"]),
-            "integration_gain_percent_std": float(row["integration_gain_percent_std"]),
-            "observed_integration_gain_percent": float(row["integration_gain_percent_mean"]),
+            **numeric_values,
+            "observed_integration_gain_percent": numeric_values["integration_gain_percent_mean"],
             "eval_examples": int(row["eval_examples"]),
-            "endpoint_space": str(row.get("endpoint_space", "normalized_model_output")),
+            "endpoint_space": endpoint_space,
         }
     expected = len(DATASET_ORDER) * len(SOLVER_ORDER) * len(TARGET_NFES) * len(TRANSFER_SCHEDULES)
     if len(selected) != expected:
@@ -933,16 +1205,30 @@ def load_integration_gain_rows(path: Path) -> Dict[Tuple[str, int, str, str], Di
 
 def validate_input_payload(payload: Mapping[str, Any]) -> None:
     cells = list(payload.get("cells", []))
-    expected = len(payload.get("datasets", [])) * len(payload.get("solvers", [])) * len(payload.get("target_nfes", []))
-    if len(cells) != expected:
-        raise ValueError(f"Expected {expected} input cells, got {len(cells)}.")
+    datasets = tuple(str(value) for value in payload.get("datasets", []))
+    solvers = tuple(str(value) for value in payload.get("solvers", []))
+    target_nfes = tuple(int(value) for value in payload.get("target_nfes", []))
+    if (
+        len(set(datasets)) != len(datasets)
+        or len(set(solvers)) != len(solvers)
+        or len(set(target_nfes)) != len(target_nfes)
+    ):
+        raise ValueError("Payload datasets, solvers, and target_nfes must not contain duplicates.")
+    expected_keys = {
+        (dataset, target_nfe, solver)
+        for dataset in datasets
+        for target_nfe in target_nfes
+        for solver in solvers
+    }
     seen = set()
     for cell in cells:
         key = (str(cell["dataset"]), int(cell["target_nfe"]), str(cell["solver_key"]))
         if key in seen:
             raise ValueError(f"Duplicate input cell {key}.")
         seen.add(key)
-        reference_grid = validate_time_grid(cell["reference_time_grid"], name=f"{key}_reference_time_grid")
+        reference_grid = validate_time_grid(
+            cell["reference_time_grid"], name=f"{key}_reference_time_grid"
+        )
         required_trace_keys = (
             VELOCITY_VARIATION_TRACE_KEY,
             "validation_oracle_local_error_trace",
@@ -954,6 +1240,12 @@ def validate_input_payload(payload: Mapping[str, Any]) -> None:
             trace = _finite_1d(cell[trace_key], name=f"{key}_{trace_key}")
             if reference_grid.size != trace.size + 1:
                 raise ValueError(f"{key} reference grid length does not match {trace_key} length.")
+    if seen != expected_keys:
+        missing = sorted(expected_keys - seen)
+        unexpected = sorted(seen - expected_keys)
+        raise ValueError(
+            f"Payload cell keys do not match the declared scope: missing={missing}, unexpected={unexpected}."
+        )
 
 
 def _ptg_variant(
@@ -989,7 +1281,9 @@ def build_points(
         reference_grid = [float(x) for x in cell["reference_time_grid"]]
         velocity_variation = [float(x) for x in cell[VELOCITY_VARIATION_TRACE_KEY]]
         local_defect = [float(x) for x in cell[LOCAL_DEFECT_TRACE_KEY]]
-        kappa, _widths, eps_h, kappa_integral = normalize_hardness_for_ptg(local_defect, reference_grid)
+        kappa, _widths, eps_h, kappa_integral = normalize_hardness_for_ptg(
+            local_defect, reference_grid
+        )
         for schedule_key in TRANSFER_SCHEDULES:
             schedule_grid = build_fixed_schedule_grid(schedule_key, runtime_nfe)
             solver_p = solver_order_for_ptg(solver_key)
@@ -1025,6 +1319,29 @@ def build_points(
             if obs_key not in integration_rows:
                 raise ValueError(f"Missing integration gain row for {obs_key}.")
             observed = dict(integration_rows[obs_key])
+            identity_values = {
+                "dataset": dataset,
+                "target_nfe": int(target_nfe),
+                "runtime_nfe": int(runtime_nfe),
+                "solver_key": solver_key,
+                "schedule_key": schedule_key,
+            }
+            for identity_key, expected_value in identity_values.items():
+                if identity_key not in observed:
+                    continue
+                observed_value = observed[identity_key]
+                if isinstance(expected_value, int):
+                    matches = int(observed_value) == expected_value
+                else:
+                    matches = str(observed_value) == expected_value
+                if not matches:
+                    raise ValueError(
+                        f"Observed integration row {obs_key} has inconsistent {identity_key}: "
+                        f"expected {expected_value!r}, got {observed_value!r}."
+                    )
+            observed_metrics = {
+                key: value for key, value in observed.items() if key not in identity_values
+            }
             points.append(
                 {
                     "dataset": dataset,
@@ -1040,9 +1357,13 @@ def build_points(
                     "ptg_percent": float(local_defect_eta.ptg_percent),
                     "ser": float(local_defect_eta.ser),
                     "ptg_local_defect_eta005": float(local_defect_eta.ptg_percent),
-                    "ptg_local_defect_reversed_eta005": float(local_defect_reversed_eta.ptg_percent),
+                    "ptg_local_defect_reversed_eta005": float(
+                        local_defect_reversed_eta.ptg_percent
+                    ),
                     "ptg_velocity_variation_raw": float(velocity_variation_raw.ptg_percent),
-                    "ptg_velocity_variation_reversed": float(velocity_variation_reversed.ptg_percent),
+                    "ptg_velocity_variation_reversed": float(
+                        velocity_variation_reversed.ptg_percent
+                    ),
                     "ser_local_defect_eta005": float(local_defect_eta.ser),
                     "ser_local_defect_reversed_eta005": float(local_defect_reversed_eta.ser),
                     "ser_velocity_variation_raw": float(velocity_variation_raw.ser),
@@ -1051,14 +1372,20 @@ def build_points(
                     "ptg_kappa_integral": float(local_defect_eta.kappa_integral),
                     "rho_integral": float(local_defect_eta.rho_integral),
                     "rho_integral_local_defect_eta005": float(local_defect_eta.rho_integral),
-                    "rho_integral_local_defect_reversed_eta005": float(local_defect_reversed_eta.rho_integral),
-                    "rho_integral_velocity_variation_raw": float(velocity_variation_raw.rho_integral),
-                    "rho_integral_velocity_variation_reversed": float(velocity_variation_reversed.rho_integral),
+                    "rho_integral_local_defect_reversed_eta005": float(
+                        local_defect_reversed_eta.rho_integral
+                    ),
+                    "rho_integral_velocity_variation_raw": float(
+                        velocity_variation_raw.rho_integral
+                    ),
+                    "rho_integral_velocity_variation_reversed": float(
+                        velocity_variation_reversed.rho_integral
+                    ),
                     "density_floor_eta": float(PTG_DENSITY_FLOOR_ETA),
                     "eps_h": float(eps_h),
                     "kappa_mean": float(np.mean(kappa)),
                     "schedule_grid": ";".join(f"{float(x):.10g}" for x in schedule_grid),
-                    **observed,
+                    **observed_metrics,
                 }
             )
     expected = len(DATASET_ORDER) * len(SOLVER_ORDER) * len(TARGET_NFES) * len(TRANSFER_SCHEDULES)
@@ -1086,38 +1413,21 @@ def write_points_csv(points: Sequence[Mapping[str, Any]], path: Path) -> None:
             writer.writerow(point)
 
 
-def _rankdata_average(values: Sequence[float]) -> np.ndarray:
-    arr = np.asarray(values, dtype=np.float64)
-    order = np.argsort(arr, kind="mergesort")
-    ranks = np.empty(arr.size, dtype=np.float64)
-    sorted_values = arr[order]
-    start = 0
-    while start < arr.size:
-        end = start + 1
-        while end < arr.size and sorted_values[end] == sorted_values[start]:
-            end += 1
-        avg_rank = 0.5 * (float(start + 1) + float(end))
-        ranks[order[start:end]] = avg_rank
-        start = end
-    return ranks
-
-
 def spearman_correlation(x: Sequence[float], y: Sequence[float]) -> Tuple[float, Optional[float]]:
-    x_arr = np.asarray(x, dtype=np.float64)
-    y_arr = np.asarray(y, dtype=np.float64)
-    if x_arr.size != y_arr.size or x_arr.size < 2:
+    x_arr = _finite_1d(x, name="spearman_x")
+    y_arr = _finite_1d(y, name="spearman_y")
+    if x_arr.shape != y_arr.shape or x_arr.size < 2:
         return float("nan"), None
-    try:
-        from scipy.stats import spearmanr
+    if float(np.std(x_arr)) <= 0.0 or float(np.std(y_arr)) <= 0.0:
+        return float("nan"), None
+    from scipy.stats import spearmanr
 
-        result = spearmanr(x_arr, y_arr)
-        return float(result.statistic), float(result.pvalue)
-    except Exception:
-        xr = _rankdata_average(x_arr)
-        yr = _rankdata_average(y_arr)
-        if float(np.std(xr)) <= 0.0 or float(np.std(yr)) <= 0.0:
-            return float("nan"), None
-        return float(np.corrcoef(xr, yr)[0, 1]), None
+    result = spearmanr(x_arr, y_arr)
+    statistic = float(result.statistic)
+    p_value = float(result.pvalue)
+    if not math.isfinite(statistic) or not math.isfinite(p_value):
+        return float("nan"), None
+    return statistic, p_value
 
 
 def _axis_limits(values: np.ndarray, *, pad_fraction: float = 0.08) -> Tuple[float, float]:
@@ -1130,7 +1440,9 @@ def _axis_limits(values: np.ndarray, *, pad_fraction: float = 0.08) -> Tuple[flo
     return low - pad_fraction * span, high + pad_fraction * span
 
 
-def summarize_ptg_points(points: Sequence[Mapping[str, Any]], *, main_ptg_key: str = PTG_PRIMARY_KEY) -> Dict[str, Any]:
+def summarize_ptg_points(
+    points: Sequence[Mapping[str, Any]], *, main_ptg_key: str = PTG_PRIMARY_KEY
+) -> Dict[str, Any]:
     if not points:
         raise ValueError("Cannot summarize an empty point set.")
     y = [float(point["observed_integration_gain_percent"]) for point in points]
@@ -1171,7 +1483,13 @@ def build_figure(points: Sequence[Mapping[str, Any]], *, x_key: str = PTG_PRIMAR
     matplotlib.rcParams.update(
         {
             "font.family": "serif",
-            "font.serif": ["Times New Roman", "Times", "Liberation Serif", "Nimbus Roman", "DejaVu Serif"],
+            "font.serif": [
+                "Times New Roman",
+                "Times",
+                "Liberation Serif",
+                "Nimbus Roman",
+                "DejaVu Serif",
+            ],
             "font.size": 14.0,
             "axes.labelsize": 15.0,
             "xtick.labelsize": 13.0,
@@ -1188,8 +1506,11 @@ def build_figure(points: Sequence[Mapping[str, Any]], *, x_key: str = PTG_PRIMAR
         raise ValueError("Cannot build a plot with no points.")
     if any(str(x_key) not in point for point in points):
         raise ValueError(f"All points must contain x_key={x_key!r}.")
-    x = np.asarray([float(point[str(x_key)]) for point in points], dtype=np.float64)
-    y = np.asarray([float(point["observed_integration_gain_percent"]) for point in points], dtype=np.float64)
+    x = _finite_1d([float(point[str(x_key)]) for point in points], name=str(x_key))
+    y = _finite_1d(
+        [float(point["observed_integration_gain_percent"]) for point in points],
+        name="observed_integration_gain_percent",
+    )
     fig, ax = plt.subplots(figsize=(8.2, 5.65))
     dataset_markers = {
         "electricity": "o",
@@ -1228,9 +1549,13 @@ def build_figure(points: Sequence[Mapping[str, Any]], *, x_key: str = PTG_PRIMAR
         slope, intercept = np.polyfit(x, y, deg=1)
         x_line = np.linspace(float(np.min(x)), float(np.max(x)), 200)
         y_line = slope * x_line + intercept
-        ax.plot(x_line, y_line, color="#222222", linewidth=1.65, label="Least-squares trend", zorder=3)
+        ax.plot(
+            x_line, y_line, color="#222222", linewidth=1.65, label="Least-squares trend", zorder=3
+        )
     rho, p_value = spearman_correlation(x, y)
-    p_text = "n/a" if p_value is None or not math.isfinite(float(p_value)) else f"{float(p_value):.2g}"
+    p_text = (
+        "n/a" if p_value is None or not math.isfinite(float(p_value)) else f"{float(p_value):.2g}"
+    )
     rho_text = "nan" if not math.isfinite(float(rho)) else f"{float(rho):.2f}"
     ax.text(
         0.03,
@@ -1240,7 +1565,12 @@ def build_figure(points: Sequence[Mapping[str, Any]], *, x_key: str = PTG_PRIMAR
         ha="left",
         va="top",
         fontsize=12.5,
-        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "#cfcfcf", "linewidth": 0.7},
+        bbox={
+            "boxstyle": "round,pad=0.25",
+            "facecolor": "white",
+            "edgecolor": "#cfcfcf",
+            "linewidth": 0.7,
+        },
     )
     ax.set_xlabel("Validation predicted transfer gain, PTG (%)")
     ax.set_ylabel("Observed integration-error gain over uniform (%)")
@@ -1311,13 +1641,15 @@ def plot_points(
     x_key: str = PTG_PRIMARY_KEY,
 ) -> Dict[str, str]:
     fig, _ax = build_figure(points, x_key=str(x_key))
-    png_path.parent.mkdir(parents=True, exist_ok=True)
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(png_path, dpi=int(dpi), bbox_inches="tight")
-    fig.savefig(pdf_path, bbox_inches="tight")
-    import matplotlib.pyplot as plt
+    try:
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(png_path, dpi=int(dpi), bbox_inches="tight")
+        fig.savefig(pdf_path, bbox_inches="tight")
+    finally:
+        import matplotlib.pyplot as plt
 
-    plt.close(fig)
+        plt.close(fig)
     return {"png": str(png_path), "pdf": str(pdf_path)}
 
 
@@ -1354,12 +1686,17 @@ def synthetic_payload() -> Dict[str, Any]:
             for target_nfe in TARGET_NFES:
                 runtime_nfe = target_nfe if solver_key in {"euler", "dpmpp2m"} else target_nfe // 2
                 reference_steps = max(32, int(round(PTG_REFERENCE_MACRO_FACTOR * runtime_nfe)))
-                reference_grid = [float(i) / float(reference_steps) for i in range(reference_steps + 1)]
+                reference_grid = [
+                    float(i) / float(reference_steps) for i in range(reference_steps + 1)
+                ]
                 trace = [
                     0.8
                     + 0.15 * dataset_idx
                     + 0.03 * solver_idx
-                    + 0.2 * math.sin(2.0 * math.pi * (float(i) / float(reference_steps) + 0.04 * dataset_idx))
+                    + 0.2
+                    * math.sin(
+                        2.0 * math.pi * (float(i) / float(reference_steps) + 0.04 * dataset_idx)
+                    )
                     for i in range(reference_steps)
                 ]
                 oracle_trace = [
@@ -1418,11 +1755,19 @@ def synthetic_observed_rows() -> Dict[Tuple[str, int, str, str], Dict[str, Any]]
         for solver_idx, solver_key in enumerate(SOLVER_ORDER):
             for nfe_idx, target_nfe in enumerate(TARGET_NFES):
                 for schedule_idx, schedule_key in enumerate(TRANSFER_SCHEDULES):
-                    gain = -2.0 + 0.7 * dataset_idx + 0.4 * solver_idx + 0.5 * nfe_idx + 0.6 * schedule_idx
+                    gain = (
+                        -2.0
+                        + 0.7 * dataset_idx
+                        + 0.4 * solver_idx
+                        + 0.5 * nfe_idx
+                        + 0.6 * schedule_idx
+                    )
                     rows[(dataset, int(target_nfe), solver_key, schedule_key)] = {
                         "dataset": dataset,
                         "target_nfe": int(target_nfe),
-                        "runtime_nfe": int(target_nfe if solver_key in {"euler", "dpmpp2m"} else target_nfe // 2),
+                        "runtime_nfe": int(
+                            target_nfe if solver_key in {"euler", "dpmpp2m"} else target_nfe // 2
+                        ),
                         "solver_key": solver_key,
                         "schedule_key": schedule_key,
                         "n_seeds": 5,
@@ -1441,55 +1786,96 @@ def synthetic_observed_rows() -> Dict[Tuple[str, int, str, str], Dict[str, Any]]
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build the forecast PTG vs observed gain scatter figure.")
+    parser = argparse.ArgumentParser(
+        description="Build the forecast PTG vs observed gain scatter figure."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    collect = subparsers.add_parser("collect", help="Collect validation hardness traces using the diffusion-flow evaluation harness.")
+    collect = subparsers.add_parser(
+        "collect",
+        help="Collect validation hardness traces using the diffusion-flow evaluation harness.",
+    )
     collect.add_argument("--out-json", type=Path, default=PTG_INPUT_JSON_PATH)
     collect.add_argument("--datasets", type=str, default=",".join(DATASET_ORDER))
     collect.add_argument("--solvers", type=str, default=",".join(SOLVER_ORDER))
-    collect.add_argument("--target-nfes", type=str, default=",".join(str(nfe) for nfe in TARGET_NFES))
+    collect.add_argument(
+        "--target-nfes", type=str, default=",".join(str(nfe) for nfe in TARGET_NFES)
+    )
     collect.add_argument("--seeds", type=str, default=",".join(str(seed) for seed in PTG_SEEDS))
     collect.add_argument("--val-windows", type=int, default=PTG_VALIDATION_WINDOW_COUNT)
     collect.add_argument("--reference-macro-factor", type=float, default=PTG_REFERENCE_MACRO_FACTOR)
-    collect.add_argument("--calibration-trace-samples", type=int, default=PTG_CALIBRATION_TRACE_SAMPLE_COUNT)
-    collect.add_argument("--backbone-manifest", type=str, default="outputs/backbone_matrix/backbone_manifest.json")
+    collect.add_argument(
+        "--calibration-trace-samples", type=int, default=PTG_CALIBRATION_TRACE_SAMPLE_COUNT
+    )
+    collect.add_argument(
+        "--backbone-manifest", type=str, default="outputs/backbone_matrix/backbone_manifest.json"
+    )
     collect.add_argument("--device", type=str, default="cuda")
-    collect.add_argument("--smoke", action="store_true", help="Collect the first dataset/solver/NFE/seed with a tiny window cap.")
+    collect.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Collect the first dataset/solver/NFE/seed with a tiny window cap.",
+    )
 
     integration = subparsers.add_parser(
         "collect-integration-error",
         help="Collect locked-test endpoint integration error against a dense reference rollout.",
     )
     integration.add_argument("--rows-csv", type=Path, default=PTG_INTEGRATION_ERROR_ROWS_CSV_PATH)
-    integration.add_argument("--seed-stats-csv", type=Path, default=PTG_INTEGRATION_ERROR_SEED_STATS_CSV_PATH)
+    integration.add_argument(
+        "--seed-stats-csv", type=Path, default=PTG_INTEGRATION_ERROR_SEED_STATS_CSV_PATH
+    )
     integration.add_argument("--datasets", type=str, default=",".join(DATASET_ORDER))
     integration.add_argument("--solvers", type=str, default=",".join(SOLVER_ORDER))
-    integration.add_argument("--target-nfes", type=str, default=",".join(str(nfe) for nfe in TARGET_NFES))
+    integration.add_argument(
+        "--target-nfes", type=str, default=",".join(str(nfe) for nfe in TARGET_NFES)
+    )
     integration.add_argument("--seeds", type=str, default=",".join(str(seed) for seed in PTG_SEEDS))
     integration.add_argument("--schedules", type=str, default=",".join(INTEGRATION_SCHEDULES))
     integration.add_argument("--test-windows", type=int, default=PTG_TEST_WINDOW_COUNT)
     integration.add_argument("--integration-batch-size", type=int, default=64)
-    integration.add_argument("--dense-reference-macro-factor", type=float, default=PTG_DENSE_REFERENCE_MACRO_FACTOR)
-    integration.add_argument("--backbone-manifest", type=str, default="outputs/backbone_matrix/backbone_manifest.json")
+    integration.add_argument(
+        "--dense-reference-macro-factor", type=float, default=PTG_DENSE_REFERENCE_MACRO_FACTOR
+    )
+    integration.add_argument(
+        "--backbone-manifest", type=str, default="outputs/backbone_matrix/backbone_manifest.json"
+    )
     integration.add_argument("--device", type=str, default="cuda")
-    integration.add_argument("--resume", action="store_true", help="Skip seed cells already present in --rows-csv.")
-    integration.add_argument("--smoke", action="store_true", help="Collect one tiny integration-error cell.")
+    integration.add_argument(
+        "--resume", action="store_true", help="Skip seed cells already present in --rows-csv."
+    )
+    integration.add_argument(
+        "--smoke", action="store_true", help="Collect one tiny integration-error cell."
+    )
 
-    plot = subparsers.add_parser("plot", help="Join collected PTG inputs with integration-error gains and render the figure.")
+    plot = subparsers.add_parser(
+        "plot", help="Join collected PTG inputs with integration-error gains and render the figure."
+    )
     plot.add_argument("--input-json", type=Path, default=PTG_INPUT_JSON_PATH)
-    plot.add_argument("--integration-error-csv", type=Path, default=PTG_INTEGRATION_ERROR_SEED_STATS_CSV_PATH)
+    plot.add_argument(
+        "--integration-error-csv", type=Path, default=PTG_INTEGRATION_ERROR_SEED_STATS_CSV_PATH
+    )
     plot.add_argument("--points-csv", type=Path, default=PTG_POINTS_CSV_PATH)
     plot.add_argument("--diagnostics-json", type=Path, default=PTG_DIAGNOSTICS_JSON_PATH)
     plot.add_argument("--png", type=Path, default=PTG_FIGURE_PNG_PATH)
     plot.add_argument("--pdf", type=Path, default=PTG_FIGURE_PDF_PATH)
     plot.add_argument("--dpi", type=int, default=600)
 
-    synth = subparsers.add_parser("plot-synthetic", help="Render a synthetic plot for smoke checks.")
-    synth.add_argument("--points-csv", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_points.csv")
-    synth.add_argument("--diagnostics-json", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_diagnostics.json")
-    synth.add_argument("--png", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.png")
-    synth.add_argument("--pdf", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.pdf")
+    synth = subparsers.add_parser(
+        "plot-synthetic", help="Render a synthetic plot for smoke checks."
+    )
+    synth.add_argument(
+        "--points-csv", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_points.csv"
+    )
+    synth.add_argument(
+        "--diagnostics-json", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_diagnostics.json"
+    )
+    synth.add_argument(
+        "--png", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.png"
+    )
+    synth.add_argument(
+        "--pdf", type=Path, default=PTG_RESULTS_DIR / "synthetic_ptg_vs_observed_gain.pdf"
+    )
     synth.add_argument("--dpi", type=int, default=200)
     return parser
 
@@ -1508,7 +1894,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         stats_rows = aggregate_integration_error_rows(rows)
         write_csv_rows(rows, Path(args.rows_csv))
         write_csv_rows(stats_rows, Path(args.seed_stats_csv))
-        print(json.dumps({"rows_csv": str(Path(args.rows_csv)), "seed_stats_csv": str(Path(args.seed_stats_csv)), "rows": len(rows), "seed_stats_rows": len(stats_rows)}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "rows_csv": str(Path(args.rows_csv)),
+                    "seed_stats_csv": str(Path(args.seed_stats_csv)),
+                    "rows": len(rows),
+                    "seed_stats_rows": len(stats_rows),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return
     if args.command == "plot":
         payload = load_json(Path(args.input_json))

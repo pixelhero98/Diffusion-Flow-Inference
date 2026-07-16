@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 
 from diffusion_flow_inference.evaluation.otflow_sampling_support import _choose_valid_windows
-from diffusion_flow_inference.schedule_transfer.otflow_signal_traces import (
-    MODEL_SIGNAL_SPECS,
-    VELOCITY_VARIATION_DIFFICULTY_ROW_KEY,
-    VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY,
-    compute_velocity_variation_difficulty_numpy,
-    resolved_velocity_variation_scale,
-)
 from diffusion_flow_inference.models.otflow_train_val import (
     _future_time_context_seq,
     _get_dataset_item_by_t,
@@ -23,77 +16,12 @@ from diffusion_flow_inference.models.otflow_train_val import (
 )
 
 
-def _safe_percentile(values: np.ndarray, q: float) -> float:
-    return float(np.quantile(values, q)) if values.size > 0 else float("nan")
-
-
-def _rankdata(values: np.ndarray) -> np.ndarray:
-    order = np.argsort(values, kind="mergesort")
-    ranks = np.empty(len(values), dtype=np.float64)
-    sorted_vals = values[order]
-    start = 0
-    while start < len(values):
-        end = start + 1
-        while end < len(values) and sorted_vals[end] == sorted_vals[start]:
-            end += 1
-        rank = 0.5 * (start + end - 1) + 1.0
-        ranks[order[start:end]] = rank
-        start = end
-    return ranks
-
-
-def _safe_corr(x: np.ndarray, y: np.ndarray) -> Dict[str, float]:
-    mask = np.isfinite(x) & np.isfinite(y)
-    x = np.asarray(x[mask], dtype=np.float64)
-    y = np.asarray(y[mask], dtype=np.float64)
-    if x.size < 2 or np.allclose(np.std(x), 0.0) or np.allclose(np.std(y), 0.0):
-        return {"n": int(x.size), "pearson": float("nan"), "spearman": float("nan")}
-    pearson = float(np.corrcoef(x, y)[0, 1])
-    spearman = float(np.corrcoef(_rankdata(x), _rankdata(y))[0, 1])
-    return {"n": int(x.size), "pearson": pearson, "spearman": spearman}
-
-
-def _step_arrays(rows: Sequence[Mapping[str, Any]], macro_steps: int) -> Dict[str, List[float]]:
-    mu = []
-    sigma = []
-    disagreement_by_step = []
-    oracle_by_step = []
-    signal_specs = [(row_key, out_key) for row_key, out_key in MODEL_SIGNAL_SPECS if out_key != "disagreement_by_step"]
-    if rows and VELOCITY_VARIATION_DIFFICULTY_ROW_KEY in rows[0]:
-        signal_specs.append((VELOCITY_VARIATION_DIFFICULTY_ROW_KEY, VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY))
-    signal_means: Dict[str, List[float]] = {out_key: [] for _, out_key in signal_specs}
-    for step_idx in range(int(macro_steps)):
-        d_vals = np.asarray(
-            [float(row["disagreement"]) for row in rows if int(row["step_index"]) == step_idx],
-            dtype=np.float64,
-        )
-        e_vals = np.asarray(
-            [float(row["oracle_local_error"]) for row in rows if int(row["step_index"]) == step_idx],
-            dtype=np.float64,
-        )
-        mu.append(float(np.mean(d_vals)) if d_vals.size > 0 else 0.0)
-        sigma.append(float(np.std(d_vals)) if d_vals.size > 0 else 0.0)
-        disagreement_by_step.append(float(np.mean(d_vals)) if d_vals.size > 0 else float("nan"))
-        oracle_by_step.append(float(np.mean(e_vals)) if e_vals.size > 0 else float("nan"))
-        for row_key, out_key in signal_specs:
-            vals = np.asarray(
-                [float(row[row_key]) for row in rows if int(row["step_index"]) == step_idx],
-                dtype=np.float64,
-            )
-            signal_means[out_key].append(float(np.mean(vals)) if vals.size > 0 else float("nan"))
-    payload = {
-        "step_mu": mu,
-        "step_sigma": sigma,
-        "disagreement_by_step": disagreement_by_step,
-        "oracle_local_error_by_step": oracle_by_step,
-    }
-    payload.update(signal_means)
-    return payload
-
-
 def _prediction_horizon(model) -> int:
     model_cfg = getattr(model, "cfg", None)
-    return int(max(1, int(getattr(model_cfg, "prediction_horizon", 1))))
+    prediction_horizon = int(getattr(model_cfg, "prediction_horizon", 1))
+    if prediction_horizon <= 0:
+        raise ValueError(f"prediction_horizon must be positive, got {prediction_horizon}.")
+    return prediction_horizon
 
 
 def _sample_eval_trace(
@@ -106,7 +34,9 @@ def _sample_eval_trace(
     oracle_local_error: bool = False,
 ) -> Tuple[torch.Tensor, Dict[str, Any], int]:
     prediction_horizon = _prediction_horizon(model)
-    if prediction_horizon > 1 and hasattr(model, "sample_future_trace"):
+    if prediction_horizon > 1:
+        if not hasattr(model, "sample_future_trace"):
+            raise RuntimeError("A multi-step model must implement sample_future_trace(...).")
         x_block, trace = model.sample_future_trace(
             hist_t,
             cond=cond_t,
@@ -134,179 +64,51 @@ def _append_rollout_context_features(
     cursor: int,
     take: int,
 ) -> torch.Tensor:
+    if block.ndim != 3 or x_hist.ndim != 3:
+        raise ValueError(
+            "block and x_hist must both have shape [batch, time, features]; "
+            f"got block={tuple(block.shape)} and x_hist={tuple(x_hist.shape)}."
+        )
+    if int(block.shape[0]) != int(x_hist.shape[0]) or int(block.shape[1]) != int(take):
+        raise ValueError(
+            "Rollout block must match the history batch and requested take length; "
+            f"got block={tuple(block.shape)}, history={tuple(x_hist.shape)}, take={int(take)}."
+        )
     target_dim = int(x_hist.shape[-1])
     block_dim = int(block.shape[-1])
     if block_dim == target_dim:
         return block
     if block_dim > target_dim:
-        return block[..., :target_dim]
+        raise ValueError(
+            f"Rollout block feature width {block_dim} exceeds history feature width {target_dim}."
+        )
 
     extra_dim = int(target_dim - block_dim)
     if future_context_seq is None:
-        extra = torch.zeros(block.shape[0], int(take), extra_dim, device=block.device, dtype=block.dtype)
-    else:
-        extra = future_context_seq[:, int(cursor) : int(cursor) + int(take), :].to(
-            device=block.device,
-            dtype=block.dtype,
+        raise ValueError(
+            f"Rollout history requires {extra_dim} future context features, but none were provided."
         )
-        if int(extra.shape[1]) < int(take):
-            pad = torch.zeros(
-                extra.shape[0],
-                int(take) - int(extra.shape[1]),
-                extra.shape[2],
-                device=extra.device,
-                dtype=extra.dtype,
-            )
-            extra = torch.cat([extra, pad], dim=1)
-        if int(extra.shape[-1]) < extra_dim:
-            pad = torch.zeros(
-                extra.shape[0],
-                extra.shape[1],
-                extra_dim - int(extra.shape[-1]),
-                device=extra.device,
-                dtype=extra.dtype,
-            )
-            extra = torch.cat([extra, pad], dim=-1)
-        elif int(extra.shape[-1]) > extra_dim:
-            extra = extra[..., :extra_dim]
+    if future_context_seq.ndim != 3:
+        raise ValueError(
+            "future_context_seq must have shape [batch, time, features], "
+            f"got {tuple(future_context_seq.shape)}."
+        )
+    expected_end = int(cursor) + int(take)
+    if (
+        int(future_context_seq.shape[0]) != int(block.shape[0])
+        or int(future_context_seq.shape[1]) < expected_end
+        or int(future_context_seq.shape[2]) != extra_dim
+    ):
+        raise ValueError(
+            "future_context_seq must match the rollout batch, cover the requested time slice, "
+            f"and have feature width {extra_dim}; got {tuple(future_context_seq.shape)} "
+            f"for cursor={int(cursor)}, take={int(take)}."
+        )
+    extra = future_context_seq[:, int(cursor) : int(cursor) + int(take), :].to(
+        device=block.device,
+        dtype=block.dtype,
+    )
     return torch.cat([block, extra], dim=-1)
-
-
-def _collect_calibration(
-    model,
-    ds_val,
-    cfg,
-    *,
-    horizon: int,
-    macro_steps: int,
-    n_windows: int,
-    seed: int,
-    sigma_eps: float,
-    solver: str = "euler",
-    chosen_t0s: Optional[Sequence[int]] = None,
-    generation_seed_base: Optional[int] = None,
-) -> Dict[str, Any]:
-    if chosen_t0s is None:
-        chosen = _choose_valid_windows(ds_val, horizon=horizon, n_windows=n_windows, seed=seed)
-    else:
-        chosen = np.asarray([int(t0) for t0 in chosen_t0s], dtype=np.int64)
-    seed_base = int(seed if generation_seed_base is None else generation_seed_base)
-    rows: List[Dict[str, Any]] = []
-    reference_time_grid: Optional[np.ndarray] = None
-
-    for window_idx, t0 in enumerate(chosen.tolist()):
-        batch = _get_dataset_item_by_t(ds_val, int(t0))
-        hist, _, _, cond, _ = _parse_batch(batch)
-        hist_t = hist[None, :, :].to(cfg.device).float()
-        cond_t = cond[None, :].to(cfg.device).float() if cond is not None else None
-        with _temporary_eval_seed(seed_base + int(window_idx)):
-            _, trace, _ = _sample_eval_trace(
-                model,
-                hist_t,
-                cond_t=cond_t,
-                steps=int(macro_steps),
-                solver=str(solver),
-                oracle_local_error=True,
-            )
-        rollout_time_grid = trace["time_grid"].cpu().numpy()
-        if reference_time_grid is None:
-            reference_time_grid = np.asarray(rollout_time_grid, dtype=np.float64)
-        elif not np.allclose(reference_time_grid, rollout_time_grid, atol=1e-8, rtol=1e-8):
-            raise ValueError("Calibration trace time grids must match across validation rollouts.")
-        step_left_times = reference_time_grid[:-1]
-        disagreement = trace["disagreement"][0].cpu().numpy()
-        velocity = trace["velocity_norm"][0].cpu().numpy()
-        trace_signal_arrays = {
-            row_key: trace[row_key][0].cpu().numpy()
-            for row_key, _ in MODEL_SIGNAL_SPECS
-            if row_key != "disagreement"
-        }
-        oracle = trace["oracle_local_error"][0].cpu().numpy()
-        for step_idx in range(int(macro_steps)):
-            row = {
-                "window_index": int(window_idx),
-                "t0": int(t0),
-                "step_index": int(step_idx),
-                "time": float(step_left_times[step_idx]),
-                "disagreement": float(disagreement[step_idx]),
-                "velocity_norm": float(velocity[step_idx]),
-                "oracle_local_error": float(oracle[step_idx]),
-            }
-            for row_key, _ in MODEL_SIGNAL_SPECS:
-                if row_key == "disagreement":
-                    continue
-                row[row_key] = float(trace_signal_arrays[row_key][step_idx])
-            rows.append(row)
-
-    residual_values = np.asarray([float(row["residual_norm"]) for row in rows], dtype=np.float64)
-    velocity_variation_scale = resolved_velocity_variation_scale(residual_values)
-    for row in rows:
-        row[VELOCITY_VARIATION_DIFFICULTY_ROW_KEY] = float(
-            compute_velocity_variation_difficulty_numpy(
-                np.asarray([float(row["residual_norm"])], dtype=np.float64),
-                np.asarray([float(row["disagreement"])], dtype=np.float64),
-                scale=float(velocity_variation_scale),
-            )[0]
-        )
-
-    step_stats = _step_arrays(rows, macro_steps)
-    for row in rows:
-        step_idx = int(row["step_index"])
-        sigma = max(float(step_stats["step_sigma"][step_idx]), float(sigma_eps))
-        row["normalized_disagreement"] = float(
-            (float(row["disagreement"]) - float(step_stats["step_mu"][step_idx])) / sigma
-        )
-
-    corr_rows = [row for row in rows if int(row["step_index"]) > 0]
-    d_arr = np.asarray([float(row["disagreement"]) for row in corr_rows], dtype=np.float64)
-    z_arr = np.asarray([float(row["normalized_disagreement"]) for row in corr_rows], dtype=np.float64)
-    e_arr = np.asarray([float(row["oracle_local_error"]) for row in corr_rows], dtype=np.float64)
-    signal_specs = list(MODEL_SIGNAL_SPECS) + [
-        (VELOCITY_VARIATION_DIFFICULTY_ROW_KEY, VELOCITY_VARIATION_DIFFICULTY_TRACE_KEY)
-    ]
-    signal_correlations_vs_oracle = {
-        out_key: _safe_corr(np.asarray([float(row[row_key]) for row in corr_rows], dtype=np.float64), e_arr)
-        for row_key, out_key in signal_specs
-    }
-    if reference_time_grid is None:
-        reference_time_grid = np.linspace(0.0, 1.0, int(macro_steps) + 1, dtype=np.float64)
-
-    payload = {
-        "macro_steps": int(macro_steps),
-        "solver": str(solver),
-        "n_windows": int(len(chosen)),
-        "exclude_step0_for_correlation": True,
-        "reference_time_grid": [float(x) for x in reference_time_grid.tolist()],
-        "reference_time_alignment": "left_endpoint",
-        "velocity_variation_scale": float(velocity_variation_scale),
-        "rows": rows,
-        "step_mu": step_stats["step_mu"],
-        "step_sigma": step_stats["step_sigma"],
-        "disagreement_by_step": step_stats["disagreement_by_step"],
-        "oracle_local_error_by_step": step_stats["oracle_local_error_by_step"],
-        "disagreement_stats": {
-            "mean": float(np.mean(d_arr)) if d_arr.size > 0 else float("nan"),
-            "std": float(np.std(d_arr)) if d_arr.size > 0 else float("nan"),
-            "p50": _safe_percentile(d_arr, 0.50),
-            "p85": _safe_percentile(d_arr, 0.85),
-            "p95": _safe_percentile(d_arr, 0.95),
-        },
-        "oracle_local_error_stats": {
-            "mean": float(np.mean(e_arr)) if e_arr.size > 0 else float("nan"),
-            "std": float(np.std(e_arr)) if e_arr.size > 0 else float("nan"),
-            "p50": _safe_percentile(e_arr, 0.50),
-            "p85": _safe_percentile(e_arr, 0.85),
-            "p95": _safe_percentile(e_arr, 0.95),
-        },
-        "correlation_disagreement_vs_oracle": _safe_corr(d_arr, e_arr),
-        "correlation_normalized_disagreement_vs_oracle": _safe_corr(z_arr, e_arr),
-        "signal_correlations_vs_oracle": signal_correlations_vs_oracle,
-    }
-    for _, out_key in signal_specs:
-        if out_key == "disagreement_by_step":
-            continue
-        payload[out_key] = step_stats[out_key]
-    return payload
 
 
 def _collect_rollout_diagnostics(
@@ -340,7 +142,11 @@ def _collect_rollout_diagnostics(
         context_len = resolve_context_length(hist_t.shape[1], horizon=horizon, cfg=cfg)
         cond_seq = None
         if ds.cond is not None:
-            cond_seq = torch.from_numpy(ds.cond[int(t0) : int(t0) + int(horizon)]).to(cfg.device).float()[None, :, :]
+            cond_seq = (
+                torch.from_numpy(ds.cond[int(t0) : int(t0) + int(horizon)])
+                .to(cfg.device)
+                .float()[None, :, :]
+            )
         future_context_seq = None
         future_context = _future_time_context_seq(ds, int(t0), int(horizon))
         if future_context is not None:
@@ -358,7 +164,9 @@ def _collect_rollout_diagnostics(
                     cond_t=cond_t,
                     steps=int(macro_steps),
                     solver=solver,
-            )
+                )
+            if int(block_len) <= 0:
+                raise ValueError(f"Sampled rollout block length must be positive, got {block_len}.")
             field_eval_rows.append(trace["field_evals_by_step"].cpu().numpy()[0])
             d_rows.append(trace["disagreement"].cpu().numpy()[0])
             sample_total_evals.append(float(trace["mean_total_field_evals_per_rollout"]))
@@ -389,7 +197,6 @@ def _collect_rollout_diagnostics(
 
 __all__ = [
     "_append_rollout_context_features",
-    "_collect_calibration",
     "_collect_rollout_diagnostics",
     "_sample_eval_trace",
 ]

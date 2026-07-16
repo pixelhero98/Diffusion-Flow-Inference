@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.data.otflow_monash_datasets import (
     find_tsf_file,
     iter_tsf_series,
@@ -15,7 +14,6 @@ from diffusion_flow_inference.data.otflow_monash_datasets import (
     monash_manifest_path,
     monash_source_dir,
 )
-
 
 _FREQUENCY_SECONDS: Mapping[str, int] = {
     "yearly": 365 * 24 * 60 * 60,
@@ -39,13 +37,22 @@ def _safe_series_id(metadata: Mapping[str, str], line_number: int) -> str:
 
 
 def _fill_missing_values(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32)
+    if values.ndim != 1:
+        raise ValueError(f"Expected a one-dimensional series, got shape={values.shape}.")
+    if values.size == 0:
+        raise ValueError("Series must not be empty.")
+    if np.isinf(values).any():
+        raise ValueError("Series contains infinite values.")
+    if np.isnan(values[0]):
+        raise ValueError("Series begins with a missing value and cannot be filled causally.")
     if not np.isnan(values).any():
         return values.astype(np.float32, copy=False)
-    idx = np.arange(values.shape[0], dtype=np.float64)
-    mask = np.isfinite(values)
-    if not np.any(mask):
-        raise ValueError("Series contains only missing values.")
-    filled = np.interp(idx, idx[mask], values[mask]).astype(np.float32)
+
+    filled = values.copy()
+    for idx in range(1, int(filled.shape[0])):
+        if np.isnan(filled[idx]):
+            filled[idx] = filled[idx - 1]
     return filled
 
 
@@ -86,7 +93,9 @@ def _time_feature_dim(time_feature_mode: str) -> int:
     raise ValueError(f"Unknown time_feature_mode={time_feature_mode!r}")
 
 
-def _regular_time_features(length: int, step_seconds: int, *, time_feature_mode: str) -> Optional[np.ndarray]:
+def _regular_time_features(
+    length: int, step_seconds: int, *, time_feature_mode: str
+) -> Optional[np.ndarray]:
     dim = _time_feature_dim(str(time_feature_mode))
     if dim == 0:
         return None
@@ -162,9 +171,10 @@ class MonashForecastWindowDataset(torch.utils.data.Dataset):
         self.cond_mean = None
         self.cond_std = None
         self.cond = None
-        self.time_feature_source = "synthetic_regular_frequency" if self.time_feature_mode != "none" else "none"
+        self.time_feature_source = (
+            "synthetic_regular_frequency" if self.time_feature_mode != "none" else "none"
+        )
         self.time_gap_scale = 1.0 if self.time_feature_mode != "none" else None
-        self.normalization_mode = "per_series_train_prefix_zscore"
 
     def __len__(self) -> int:
         return len(self.example_refs)
@@ -180,20 +190,17 @@ class MonashForecastWindowDataset(torch.utils.data.Dataset):
         stop = int(start + self.horizon)
         return series.norm_values[start:stop].astype(np.float32, copy=True)
 
-    def target_block_raw(self, idx: int) -> np.ndarray:
-        ref = self.example_refs[int(idx)]
-        series = self.series_records[int(ref.series_idx)]
-        start = int(ref.target_t)
-        stop = int(start + self.horizon)
-        return series.raw_values[start:stop].astype(np.float32, copy=True)
-
     def denormalize_block(self, block: np.ndarray, idx: int) -> np.ndarray:
         series = self._series_record(int(idx))
-        return (np.asarray(block, dtype=np.float32) * float(series.std) + float(series.mean)).astype(np.float32)
+        return (
+            np.asarray(block, dtype=np.float32) * float(series.std) + float(series.mean)
+        ).astype(np.float32)
 
     def mase_denom(self, idx: int) -> float:
         series = self._series_record(int(idx))
-        train_prefix = np.asarray(series.raw_values[: int(series.train_prefix_end)], dtype=np.float64).reshape(-1)
+        train_prefix = np.asarray(
+            series.raw_values[: int(series.train_prefix_end)], dtype=np.float64
+        ).reshape(-1)
         if train_prefix.size <= 1:
             return 1.0
         seasonal_period = int(max(1, self.mase_seasonal_period))
@@ -243,9 +250,13 @@ class MonashForecastWindowDataset(torch.utils.data.Dataset):
         ref = self.example_refs[int(idx)]
         series = self.series_records[int(ref.series_idx)]
         target_t = int(ref.target_t)
-        hist = series.norm_values[target_t - self.history_len : target_t].astype(np.float32, copy=True)
+        hist = series.norm_values[target_t - self.history_len : target_t].astype(
+            np.float32, copy=True
+        )
         if self.time_feature_mode != "none" and series.time_features is not None:
-            hist_time = series.time_features[target_t - self.history_len : target_t].astype(np.float32, copy=True)
+            hist_time = series.time_features[target_t - self.history_len : target_t].astype(
+                np.float32, copy=True
+            )
             if hist_time.shape[0] > 0 and hist_time.shape[1] >= 2:
                 hist_time[:, 1] = hist_time[:, 1] - float(hist_time[0, 1])
             hist = np.concatenate([hist, hist_time], axis=1).astype(np.float32, copy=False)
@@ -342,7 +353,9 @@ def _train_example_refs(
     return refs
 
 
-def _holdout_example_refs(series_records: Sequence[ForecastSeriesRecord], *, split_name: str) -> List[ForecastExampleRef]:
+def _holdout_example_refs(
+    series_records: Sequence[ForecastSeriesRecord], *, split_name: str
+) -> List[ForecastExampleRef]:
     refs: List[ForecastExampleRef] = []
     for series_idx, record in enumerate(series_records):
         if str(split_name) == "val":
@@ -359,7 +372,6 @@ def build_monash_forecast_splits(
     *,
     dataset_root: str | Path,
     dataset_key: str,
-    cfg: OTFlowConfig,
     history_len: int,
     horizon: int,
     stride_train: int = 1,
@@ -383,7 +395,9 @@ def build_monash_forecast_splits(
         history_len=int(history_len),
         horizon=int(horizon),
         series_records=records,
-        example_refs=_train_example_refs(records, history_len=int(history_len), horizon=int(horizon), stride=int(stride_train)),
+        example_refs=_train_example_refs(
+            records, history_len=int(history_len), horizon=int(horizon), stride=int(stride_train)
+        ),
         time_feature_mode=str(time_feature_mode),
         frequency_label=str(manifest.frequency),
         mase_seasonal_period=int(mase_seasonal_period),
@@ -425,7 +439,9 @@ def build_monash_forecast_splits(
             "time_features_enabled": bool(time_feature_mode != "none"),
             "time_feature_mode": str(time_feature_mode),
             "time_feature_dim": _time_feature_dim(str(time_feature_mode)),
-            "time_feature_source": "synthetic_regular_frequency" if time_feature_mode != "none" else "none",
+            "time_feature_source": "synthetic_regular_frequency"
+            if time_feature_mode != "none"
+            else "none",
             "n_train_examples": int(len(ds_train)),
             "n_val_examples": int(len(ds_val)),
             "n_test_examples": int(len(ds_test)),

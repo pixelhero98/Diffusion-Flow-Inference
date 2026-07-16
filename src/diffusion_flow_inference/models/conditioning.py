@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
@@ -45,8 +45,12 @@ class CondEmbedder(nn.Module):
         return self.t_mlp(self.t_emb(t))
 
     def embed_cond(self, cond: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-        if self.cond_mlp is None or cond is None:
+        if self.cond_mlp is None:
+            if cond is not None:
+                raise ValueError("Conditioning was provided to an unconditional model.")
             return None
+        if cond is None:
+            raise ValueError("This model requires a conditioning tensor.")
         return self.cond_mlp(cond)
 
 
@@ -92,7 +96,11 @@ class TransformerContextEncoder(nn.Module):
             activation="gelu",
             norm_first=True,
         )
-        self.enc = nn.TransformerEncoder(enc_layer, num_layers=cfg.model.ctx_layers)
+        self.enc = nn.TransformerEncoder(
+            enc_layer,
+            num_layers=cfg.model.ctx_layers,
+            enable_nested_tensor=False,
+        )
         self.out_norm = nn.LayerNorm(hidden_dim)
         self.pool = AttentionPool(hidden_dim)
 
@@ -104,7 +112,9 @@ class TransformerContextEncoder(nn.Module):
     def forward(self, ctx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.in_proj(ctx)
         if x.shape[1] != self.pos.shape[1]:
-            pos = F.interpolate(self.pos.transpose(1, 2), size=x.shape[1], mode="linear", align_corners=False).transpose(1, 2)
+            pos = F.interpolate(
+                self.pos.transpose(1, 2), size=x.shape[1], mode="linear", align_corners=False
+            ).transpose(1, 2)
         else:
             pos = self.pos
         x = x + pos[:, -x.shape[1] :, :]
@@ -119,11 +129,12 @@ class HybridContextEncoder(nn.Module):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
         kernel = max(1, int(cfg.model.ctx_local_kernel))
-        scales = tuple(sorted({int(scale) for scale in cfg.model.ctx_pool_scales if int(scale) > 1}))
+        scales = tuple(
+            sorted({int(scale) for scale in cfg.model.ctx_pool_scales if int(scale) > 1})
+        )
 
-        self.hidden_dim = hidden_dim
-        self.kernel = kernel
         self.scales = scales
+        self.use_causal_mask = bool(cfg.model.ctx_causal)
         self.in_proj = nn.Linear(cfg.context_dim, hidden_dim)
         self.local_conv = nn.Conv1d(
             hidden_dim,
@@ -143,7 +154,11 @@ class HybridContextEncoder(nn.Module):
             activation="gelu",
             norm_first=True,
         )
-        self.enc = nn.TransformerEncoder(enc_layer, num_layers=cfg.model.ctx_layers)
+        self.enc = nn.TransformerEncoder(
+            enc_layer,
+            num_layers=cfg.model.ctx_layers,
+            enable_nested_tensor=False,
+        )
         self.out_norm = nn.LayerNorm(hidden_dim)
         self.summary_pool = AttentionPool(hidden_dim)
         self.summary_fuse = nn.Sequential(
@@ -153,7 +168,9 @@ class HybridContextEncoder(nn.Module):
         )
         self.scale_projs = nn.ModuleList([nn.Linear(hidden_dim, hidden_dim) for _ in self.scales])
 
-    def _mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+    def _mask(self, seq_len: int, device: torch.device) -> Optional[torch.Tensor]:
+        if not self.use_causal_mask:
+            return None
         return torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1)
 
     def _position(self, x: torch.Tensor) -> torch.Tensor:
@@ -213,6 +230,7 @@ class MultiScaleContextEncoder(nn.Module):
             multi_scale_tokens.append(proj(pooled_ctx))
         return torch.cat(multi_scale_tokens, dim=1), pooled_base
 
+
 def build_context_encoder(cfg: OTFlowConfig) -> nn.Module:
     name = cfg.model.ctx_encoder.lower()
     if name == "lstm":
@@ -231,8 +249,12 @@ class CrossAttentionConditioner(nn.Module):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
         self.q_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.attn = nn.MultiheadAttention(hidden_dim, num_heads=cfg.model.ctx_heads, batch_first=True, dropout=cfg.model.dropout)
-        self.out = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.LayerNorm(hidden_dim))
+        self.attn = nn.MultiheadAttention(
+            hidden_dim, num_heads=cfg.model.ctx_heads, batch_first=True, dropout=cfg.model.dropout
+        )
+        self.out = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.LayerNorm(hidden_dim)
+        )
 
     def forward(self, q: torch.Tensor, ctx_tokens: torch.Tensor) -> torch.Tensor:
         qh = self.q_proj(q)[:, None, :]
@@ -252,7 +274,6 @@ class ConditioningState:
 @dataclass
 class ConditioningCache:
     ctx_tokens: torch.Tensor
-    ctx_summary: torch.Tensor
     summary: torch.Tensor
     cond_emb: Optional[torch.Tensor] = None
 
@@ -260,7 +281,6 @@ class ConditioningCache:
 class SharedConditioningBackbone(nn.Module):
     def __init__(self, cfg: OTFlowConfig):
         super().__init__()
-        self.cfg = cfg
         self.context_encoder = build_context_encoder(cfg)
         self.conditioner = CondEmbedder(cfg)
         self.cross = CrossAttentionConditioner(cfg)
@@ -277,18 +297,17 @@ class SharedConditioningBackbone(nn.Module):
         self,
         hist: torch.Tensor,
         x_ref: torch.Tensor,
-        t: Optional[torch.Tensor] = None,
+        t: torch.Tensor,
         cond: Optional[torch.Tensor] = None,
-        force_zero_t: bool = False,
         cache: Optional[ConditioningCache] = None,
     ) -> ConditioningState:
         if cache is None:
             cache = self.precompute(hist, cond=cond)
+        elif cond is not None:
+            raise ValueError("Do not pass cond when using a precomputed conditioning cache.")
         ctx_tokens = cache.ctx_tokens
-        if t is None or force_zero_t:
-            t = torch.zeros(x_ref.shape[0], 1, device=x_ref.device)
         t_emb = self.conditioner.embed_t(t)
-        cond_emb = cache.cond_emb if (cache.cond_emb is not None or cond is None) else self.conditioner.embed_cond(cond)
+        cond_emb = cache.cond_emb
         query = self.x_proj(x_ref) + t_emb
         if cond_emb is not None:
             query = query + cond_emb
@@ -315,7 +334,6 @@ class SharedConditioningBackbone(nn.Module):
         cond_emb = self.conditioner.embed_cond(cond)
         return ConditioningCache(
             ctx_tokens=ctx_tokens,
-            ctx_summary=ctx_summary,
             summary=summary,
             cond_emb=cond_emb,
         )

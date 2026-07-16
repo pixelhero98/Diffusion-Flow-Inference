@@ -5,7 +5,6 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-
 _CONFIG_SECTIONS = ("data", "model", "fm", "train", "sample")
 
 
@@ -40,7 +39,6 @@ class SharedModelConfig:
     ctx_pool_scales: Tuple[int, ...] = (4, 16)
     ctx_heads: int = 4
     ctx_layers: int = 2
-    diffusion_steps: int = 32
     adaptive_context: bool = False
     adaptive_context_ratio: float = 1.5
     adaptive_context_min: int = 64
@@ -73,7 +71,7 @@ class TrainConfig:
     ema_decay: float = 0.999
     lr_warmup_steps: int = 500
     lr_schedule: str = "cosine"
-    use_swa: bool = True
+    use_swa: bool = False
     use_amp: bool = True
     grad_accum_steps: int = 1
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -83,14 +81,8 @@ class TrainConfig:
 @dataclass
 class SampleConfig:
     steps: int = 2
-    cfg_scale: float = 1.0
     solver: str = "euler"
     time_grid: Tuple[float, ...] = ()
-    adaptive_rtol: float = 1e-3
-    adaptive_atol: float = 1e-6
-    adaptive_safety: float = 0.9
-    adaptive_min_step: float = 1e-5
-    adaptive_max_nfe: int = 512
 
 
 @dataclass(init=False)
@@ -119,23 +111,64 @@ class OTFlowConfig:
             self.apply_overrides(**flat_overrides)
 
     def __getattr__(self, name: str) -> Any:
-        for section_name in _CONFIG_SECTIONS:
-            section = object.__getattribute__(self, section_name)
-            if hasattr(section, name):
-                return getattr(section, name)
+        matching_sections = [
+            section_name
+            for section_name in _CONFIG_SECTIONS
+            if hasattr(object.__getattribute__(self, section_name), name)
+        ]
+        if len(matching_sections) > 1:
+            raise AttributeError(
+                f"Ambiguous config field {name!r}; access it through one of: "
+                + ", ".join(f"{section}.{name}" for section in matching_sections)
+            )
+        if matching_sections:
+            return getattr(object.__getattribute__(self, matching_sections[0]), name)
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def apply_overrides(self, **flat_overrides: Any) -> "OTFlowConfig":
         for key, value in flat_overrides.items():
-            matched = False
-            for section_name in _CONFIG_SECTIONS:
-                section = getattr(self, section_name)
-                if hasattr(section, key):
-                    setattr(section, key, value)
-                    matched = True
-                    break
-            if not matched:
+            matching_sections = [
+                section_name
+                for section_name in _CONFIG_SECTIONS
+                if hasattr(getattr(self, section_name), key)
+            ]
+            if not matching_sections:
                 raise TypeError(f"Unknown config field: {key}")
+            if len(matching_sections) > 1:
+                raise TypeError(
+                    f"Ambiguous config field {key!r}; set one of: "
+                    + ", ".join(f"cfg.{section}.{key}" for section in matching_sections)
+                )
+            setattr(getattr(self, matching_sections[0]), key, value)
+        return self
+
+    def validate(self) -> "OTFlowConfig":
+        rollout_mode = str(self.model.rollout_mode).strip().lower()
+        if rollout_mode not in {"autoregressive", "non_ar"}:
+            raise ValueError(
+                "model.rollout_mode must be 'autoregressive' or 'non_ar', "
+                f"got {self.model.rollout_mode!r}."
+            )
+        future_block_len = int(self.model.future_block_len)
+        if future_block_len <= 0:
+            raise ValueError(f"model.future_block_len must be positive, got {future_block_len}.")
+        if rollout_mode == "autoregressive" and future_block_len != 1:
+            raise ValueError("Autoregressive models require model.future_block_len=1.")
+        if rollout_mode == "non_ar" and future_block_len <= 1:
+            raise ValueError("Non-autoregressive models require model.future_block_len>1.")
+
+        lr_schedule = str(self.train.lr_schedule).strip().lower()
+        if lr_schedule not in {"constant", "cosine"}:
+            raise ValueError(
+                f"train.lr_schedule must be 'constant' or 'cosine', got {self.train.lr_schedule!r}."
+            )
+        ema_decay = float(self.train.ema_decay)
+        if not 0.0 <= ema_decay < 1.0:
+            raise ValueError(f"train.ema_decay must be in [0, 1), got {ema_decay}.")
+        if bool(self.train.use_swa) and ema_decay > 0.0:
+            raise ValueError(
+                "EMA and SWA cannot be enabled simultaneously; choose one averaging strategy."
+            )
         return self
 
     @property
@@ -151,7 +184,9 @@ class OTFlowConfig:
         use_elapsed = bool(getattr(self.model, "use_time_features", False))
         use_gap_only = bool(getattr(self.model, "use_time_gaps", False))
         if use_elapsed and use_gap_only:
-            raise ValueError("Time features must use exactly one mode: none, gap_only, or gap_elapsed.")
+            raise ValueError(
+                "Time features must use exactly one mode: none, gap_only, or gap_elapsed."
+            )
         if use_elapsed:
             extra_dim = 2
         elif use_gap_only:
@@ -163,7 +198,11 @@ class OTFlowConfig:
     @property
     def prediction_horizon(self) -> int:
         rollout_mode = str(self.model.rollout_mode).strip().lower()
-        future_block_len = max(1, int(self.model.future_block_len))
+        if rollout_mode not in {"autoregressive", "non_ar"}:
+            raise ValueError(f"Unknown model.rollout_mode={self.model.rollout_mode!r}.")
+        future_block_len = int(self.model.future_block_len)
+        if future_block_len <= 0:
+            raise ValueError(f"model.future_block_len must be positive, got {future_block_len}.")
         return future_block_len if rollout_mode == "non_ar" else 1
 
     @property

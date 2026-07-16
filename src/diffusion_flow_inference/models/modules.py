@@ -44,22 +44,24 @@ class ResBlock(nn.Module):
 
 
 class ResMLP(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, n_blocks: int = 2, dropout: float = 0.0):
+    def __init__(
+        self, in_dim: int, hidden_dim: int, out_dim: int, n_blocks: int = 2, dropout: float = 0.0
+    ):
         super().__init__()
         self.in_proj = nn.Linear(in_dim, hidden_dim)
         self.blocks = nn.ModuleList([ResBlock(hidden_dim, dropout) for _ in range(n_blocks)])
         self.out_proj = nn.Linear(hidden_dim, out_dim)
-        self.out_norm = nn.LayerNorm(out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = F.silu(self.in_proj(x))
         for blk in self.blocks:
             h = blk(h)
-        return self.out_norm(self.out_proj(h))
+        return self.out_proj(h)
 
 
-
-def build_mlp(in_dim: int, hidden_dim: int, out_dim: int, dropout: float = 0.0, use_res: bool = True) -> nn.Module:
+def build_mlp(
+    in_dim: int, hidden_dim: int, out_dim: int, dropout: float = 0.0, use_res: bool = True
+) -> nn.Module:
     if use_res:
         return ResMLP(in_dim, hidden_dim, out_dim, n_blocks=2, dropout=dropout)
     return MLP(in_dim, hidden_dim, out_dim, dropout=dropout)
@@ -83,12 +85,12 @@ class AdaLN(nn.Module):
         return scale * self.norm(x) + shift
 
 
-
-def compute_rope_freqs(seq_len: int, dim: int, base: float = 10000.0, device: Optional[torch.device] = None) -> torch.Tensor:
+def compute_rope_freqs(
+    seq_len: int, dim: int, base: float = 10000.0, device: Optional[torch.device] = None
+) -> torch.Tensor:
     inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, device=device).float() / dim))
     t = torch.arange(seq_len, device=device).float()
     return torch.outer(t, inv_freq)
-
 
 
 def apply_rotary_pos_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
@@ -103,18 +105,23 @@ def apply_rotary_pos_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
 class RoPEAttention(nn.Module):
     def __init__(self, hidden_dim: int, n_heads: int, dropout: float = 0.0):
         super().__init__()
+        if hidden_dim <= 0 or n_heads <= 0:
+            raise ValueError("hidden_dim and n_heads must be positive")
         if hidden_dim % n_heads != 0:
             raise ValueError("hidden_dim must be divisible by n_heads")
-        self.hidden_dim = hidden_dim
         self.n_heads = n_heads
         self.head_dim = hidden_dim // n_heads
+        if self.head_dim % 2 != 0:
+            raise ValueError("Rotary attention requires an even per-head dimension")
         self.qkv = nn.Linear(hidden_dim, 3 * hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, channels = x.shape
-        qkv = self.qkv(x).reshape(bsz, seq_len, 3, self.n_heads, self.head_dim).permute(2, 0, 1, 3, 4)
+        qkv = (
+            self.qkv(x).reshape(bsz, seq_len, 3, self.n_heads, self.head_dim).permute(2, 0, 1, 3, 4)
+        )
         q, k, v = qkv[0], qkv[1], qkv[2]
         q = apply_rotary_pos_emb(q, freqs)
         k = apply_rotary_pos_emb(k, freqs)
@@ -134,7 +141,9 @@ class TransformerFUBlock(nn.Module):
         self.adaln_sa = AdaLN(hidden_dim, hidden_dim)
         self.self_attn = RoPEAttention(hidden_dim, n_heads, dropout=dropout)
         self.adaln_ca = AdaLN(hidden_dim, hidden_dim)
-        self.cross_attn = nn.MultiheadAttention(hidden_dim, num_heads=n_heads, batch_first=True, dropout=dropout)
+        self.cross_attn = nn.MultiheadAttention(
+            hidden_dim, num_heads=n_heads, batch_first=True, dropout=dropout
+        )
         self.adaln_ff = AdaLN(hidden_dim, hidden_dim)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, 4 * hidden_dim),
@@ -166,8 +175,6 @@ class TransformerFUNet(nn.Module):
     def __init__(self, cfg: OTFlowConfig):
         super().__init__()
         hidden_dim = cfg.model.hidden_dim
-        self.levels = cfg.data.levels
-        self.future_block_len = int(max(1, cfg.prediction_horizon))
         self.token_dim = int(getattr(cfg.data, "token_dim", 4))
         if self.token_dim <= 0:
             raise ValueError(f"token_dim must be positive, got {self.token_dim}")
@@ -178,11 +185,22 @@ class TransformerFUNet(nn.Module):
             )
         self.seq_len = sample_state_dim // self.token_dim
         self.n_heads = cfg.model.fu_net_heads
+        if self.n_heads <= 0 or hidden_dim % self.n_heads != 0:
+            raise ValueError("model.hidden_dim must be divisible by model.fu_net_heads")
         self.in_proj = nn.Linear(self.token_dim, hidden_dim)
         head_dim = hidden_dim // self.n_heads
-        self.register_buffer("rope_freqs", compute_rope_freqs(self.seq_len, head_dim), persistent=False)
+        if head_dim % 2 != 0:
+            raise ValueError(
+                "Transformer vector fields require an even per-head dimension for RoPE"
+            )
+        self.register_buffer(
+            "rope_freqs", compute_rope_freqs(self.seq_len, head_dim), persistent=False
+        )
         self.blocks = nn.ModuleList(
-            [TransformerFUBlock(hidden_dim, self.n_heads, cfg.model.dropout) for _ in range(cfg.model.fu_net_layers)]
+            [
+                TransformerFUBlock(hidden_dim, self.n_heads, cfg.model.dropout)
+                for _ in range(cfg.model.fu_net_layers)
+            ]
         )
         self.out_adaln = AdaLN(hidden_dim, hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, self.token_dim)
@@ -193,7 +211,9 @@ class TransformerFUNet(nn.Module):
             self.rope_freqs = compute_rope_freqs(self.seq_len, head_dim, device=device)
         return self.rope_freqs
 
-    def forward(self, x: torch.Tensor, ctx_tokens: torch.Tensor, adaln_cond: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, ctx_tokens: torch.Tensor, adaln_cond: torch.Tensor
+    ) -> torch.Tensor:
         bsz = x.shape[0]
         tokens = x.view(bsz, self.seq_len, self.token_dim)
         h = self.in_proj(tokens)
@@ -208,7 +228,6 @@ class EMAModel:
     def __init__(self, model: nn.Module, decay: float = 0.999):
         self.decay = decay
         self.shadow: Dict[str, torch.Tensor] = {}
-        self.backup: Dict[str, torch.Tensor] = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
                 self.shadow[name] = param.data.clone()
@@ -220,14 +239,6 @@ class EMAModel:
                 self.shadow[name].mul_(self.decay).add_(param.data, alpha=1 - self.decay)
 
     def apply_shadow(self, model: nn.Module) -> None:
-        self.backup = {}
         for name, param in model.named_parameters():
             if name in self.shadow:
-                self.backup[name] = param.data.clone()
                 param.data.copy_(self.shadow[name])
-
-    def restore(self, model: nn.Module) -> None:
-        for name, param in model.named_parameters():
-            if name in self.backup:
-                param.data.copy_(self.backup[name])
-        self.backup = {}

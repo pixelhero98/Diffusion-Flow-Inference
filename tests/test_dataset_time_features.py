@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,23 +7,28 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.data.otflow_datasets import (
     L2FeatureMap,
     WindowedParamSequenceDataset,
     build_dataset_splits_from_arrays,
     load_l2_npz,
 )
-from diffusion_flow_inference.evaluation.otflow_evaluation_support import choose_forecast_example_indices, evaluate_forecast_schedule, parse_forecast_datasets
-from diffusion_flow_inference.data.otflow_forecast_data import ForecastExampleRef, ForecastSeriesRecord, MonashForecastWindowDataset, _regular_time_features
-from diffusion_flow_inference.data.otflow_medical_constants import (
-    LONG_TERM_HEADERED_ECG_DATASET_KEY,
-    long_term_headered_ecg_manifest_path,
+from diffusion_flow_inference.data.otflow_forecast_data import (
+    ForecastExampleRef,
+    ForecastSeriesRecord,
+    MonashForecastWindowDataset,
+    _fill_missing_values,
+    _regular_time_features,
 )
-from diffusion_flow_inference.data.otflow_medical_datasets import prepare_long_term_headered_ecg_dataset
+from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
+    choose_forecast_example_indices,
+    evaluate_forecast_schedule,
+    parse_forecast_datasets,
+)
+from diffusion_flow_inference.models.config import OTFlowConfig
 
 
-class ExtrapolationFixesTest(unittest.TestCase):
+class DatasetTimeFeatureTests(unittest.TestCase):
     def _forecast_record(self, *, time_feature_mode: str) -> ForecastSeriesRecord:
         raw = np.arange(12, dtype=np.float32)
         return ForecastSeriesRecord(
@@ -83,7 +87,11 @@ class ExtrapolationFixesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             numeric_path = root / "numeric.npz"
-            np.savez(numeric_path, params_raw=np.zeros((8, 4), dtype=np.float32), mids=np.zeros(8, dtype=np.float32))
+            np.savez(
+                numeric_path,
+                params_raw=np.zeros((8, 4), dtype=np.float32),
+                mids=np.zeros(8, dtype=np.float32),
+            )
             loaded = load_l2_npz(str(numeric_path))
             self.assertEqual(loaded["params_raw"].dtype, np.float32)
 
@@ -131,29 +139,17 @@ class ExtrapolationFixesTest(unittest.TestCase):
             (60, 90),
         )
 
-    def test_parse_forecast_datasets_rejects_high_level_ecg_until_checkpoint_is_supported(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unknown forecast datasets"):
-            parse_forecast_datasets(f"electricity,{LONG_TERM_HEADERED_ECG_DATASET_KEY}")
+    def test_missing_values_are_filled_without_future_leakage(self) -> None:
+        observed = _fill_missing_values(np.asarray([1.0, np.nan, 3.0], dtype=np.float32))
+        changed_holdout = _fill_missing_values(np.asarray([1.0, np.nan, 30.0], dtype=np.float32))
+        np.testing.assert_array_equal(observed[:2], np.asarray([1.0, 1.0], dtype=np.float32))
+        np.testing.assert_array_equal(observed[:2], changed_holdout[:2])
+        with self.assertRaisesRegex(ValueError, "begins with a missing value"):
+            _fill_missing_values(np.asarray([np.nan, 1.0], dtype=np.float32))
+
+    def test_parse_forecast_datasets_rejects_unknown_dataset(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown forecast datasets"):
             parse_forecast_datasets("electricity,not_a_dataset")
-
-    def test_stale_ecg_manifest_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manifest_path = long_term_headered_ecg_manifest_path(Path(tmpdir))
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "dataset_key": LONG_TERM_HEADERED_ECG_DATASET_KEY,
-                        "context_length": 2000,
-                        "official_horizon": 1000,
-                        "series_specs": [],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "Existing ECG manifest does not match"):
-                prepare_long_term_headered_ecg_dataset(Path(tmpdir), history_len=4, horizon=2)
 
     def test_horizon_one_forecast_schedule_uses_target_without_future_tuple(self) -> None:
         cfg = OTFlowConfig(

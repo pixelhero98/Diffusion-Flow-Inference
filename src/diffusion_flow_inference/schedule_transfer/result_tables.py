@@ -43,7 +43,7 @@ def _summary_metric(row: Mapping[str, Any], metric_key: str) -> Any:
 def augment_rows_with_relative_metrics(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     baseline_rows: Dict[Tuple[Any, ...], Mapping[str, Any]] = {}
     for row in rows:
-        if str(row["scheduler_key"]) == "uniform":
+        if str(row["schedule_key"]) == "uniform":
             baseline_rows[_summary_match_key(row)] = row
 
     enriched: List[Dict[str, Any]] = []
@@ -51,9 +51,15 @@ def augment_rows_with_relative_metrics(rows: Sequence[Mapping[str, Any]]) -> Lis
         payload = dict(row)
         baseline = baseline_rows.get(_summary_match_key(row))
         family = str(row["benchmark_family"])
-        payload["relative_crps_gain_vs_uniform"] = _summary_relative_gain(row, "relative_crps_gain_vs_uniform")
-        payload["relative_mase_gain_vs_uniform"] = _summary_relative_gain(row, "relative_mase_gain_vs_uniform")
-        payload["relative_score_gain_vs_uniform"] = _summary_relative_gain(row, "relative_score_gain_vs_uniform")
+        payload["relative_crps_gain_vs_uniform"] = _summary_relative_gain(
+            row, "relative_crps_gain_vs_uniform"
+        )
+        payload["relative_mase_gain_vs_uniform"] = _summary_relative_gain(
+            row, "relative_mase_gain_vs_uniform"
+        )
+        payload["relative_score_gain_vs_uniform"] = _summary_relative_gain(
+            row, "relative_score_gain_vs_uniform"
+        )
         if baseline is not None and family == "forecast_extrapolation":
             if payload["relative_crps_gain_vs_uniform"] is None:
                 payload["relative_crps_gain_vs_uniform"] = _safe_relative_gain(
@@ -75,6 +81,4 @@ def augment_rows_with_relative_metrics(rows: Sequence[Mapping[str, Any]]) -> Lis
     return enriched
 
 
-__all__ = [
-    "augment_rows_with_relative_metrics",
-]
+__all__ = ["augment_rows_with_relative_metrics"]

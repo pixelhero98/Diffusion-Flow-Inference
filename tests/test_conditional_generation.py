@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -10,17 +11,23 @@ import numpy as np
 import torch
 
 import diffusion_flow_inference.data.otflow_medical_datasets as medical_datasets
-from diffusion_flow_inference.models.config import OTFlowConfig
-from diffusion_flow_inference.evaluation.fm_backbone_registry import (
+from diffusion_flow_inference.data.otflow_datasets import build_dataset_splits_from_arrays
+from diffusion_flow_inference.data.otflow_medical_datasets import prepare_sleep_edf_dataset
+from diffusion_flow_inference.evaluation.backbone_registry import (
     BACKBONE_NAME_OTFLOW,
     CONDITIONAL_GENERATION_FAMILY,
     materialize_backbone_manifest,
 )
-from diffusion_flow_inference.data.otflow_datasets import build_dataset_splits_from_arrays
-from diffusion_flow_inference.evaluation.otflow_evaluation_support import load_conditional_generation_checkpoint_splits
-from diffusion_flow_inference.data.otflow_medical_datasets import prepare_sleep_edf_dataset
+from diffusion_flow_inference.evaluation.otflow_evaluation_support import (
+    load_conditional_generation_checkpoint_splits,
+)
+from diffusion_flow_inference.models.config import OTFlowConfig
 from diffusion_flow_inference.models.otflow_model import OTFlow
-from diffusion_flow_inference.models.otflow_train_val import _parse_batch, select_eval_window_starts, train_loop
+from diffusion_flow_inference.models.otflow_train_val import (
+    _parse_batch,
+    select_eval_window_starts,
+    train_loop,
+)
 
 
 def _tiny_cfg(*, cond_dim: int = 0) -> OTFlowConfig:
@@ -44,7 +51,7 @@ def _tiny_cfg(*, cond_dim: int = 0) -> OTFlowConfig:
     )
 
 
-class ConditionalGenerationFixesTest(unittest.TestCase):
+class ConditionalGenerationTests(unittest.TestCase):
     def test_dataset_builder_updates_model_cond_dim_without_shadow_field(self) -> None:
         rng = np.random.default_rng(0)
         params = rng.normal(size=(80, 4)).astype(np.float32)
@@ -100,7 +107,9 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
             root = Path(tmpdir)
             artifact_dir = root / "conditional_generation" / "sleep_edf" / "transformer"
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            torch.save({"cfg": cfg.to_dict(), "model_state": model.state_dict()}, artifact_dir / "model.pt")
+            torch.save(
+                {"cfg": cfg.to_dict(), "model_state": model.state_dict()}, artifact_dir / "model.pt"
+            )
             (artifact_dir / "checkpoint_metadata.json").write_text(
                 json.dumps(
                     {
@@ -124,25 +133,33 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
                     device=torch.device("cpu"),
                 )
 
-    def test_sleep_metadata_is_bound_to_requested_npz_path(self) -> None:
+    def test_sleep_metadata_remains_valid_after_directory_relocation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            requested = root / "custom_sleep_edf.npz"
-            requested.write_bytes(b"placeholder")
+            original_dir = root / "original"
+            original_dir.mkdir()
+            requested = original_dir / "custom_sleep_edf.npz"
+            npz_bytes = b"portable-placeholder"
+            requested.write_bytes(npz_bytes)
             requested.with_suffix(".json").write_text(
                 json.dumps(
                     {
+                        "schema": "sleep_edf_prepared_dataset",
+                        "schema_version": 1,
                         "dataset_key": "sleep_edf",
                         "history_len": 12000,
                         "official_horizon": 3000,
-                        "prepared_npz_path": str(root / "other_sleep_edf.npz"),
+                        "prepared_npz_file": requested.name,
+                        "prepared_npz_sha256": hashlib.sha256(npz_bytes).hexdigest(),
                     }
                 ),
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, "does not match requested NPZ path"):
-                prepare_sleep_edf_dataset(requested)
+            relocated_dir = root / "relocated"
+            original_dir.rename(relocated_dir)
+            metadata = prepare_sleep_edf_dataset(relocated_dir / requested.name)
+            self.assertEqual(metadata["prepared_npz_file"], requested.name)
 
     def test_sleep_loader_disables_pickle(self) -> None:
         cfg = OTFlowConfig(
@@ -159,28 +176,42 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
             npz_path = Path(tmpdir) / "sleep_edf.npz"
             npz_path.write_bytes(b"placeholder")
             metadata = {
-                "prepared_npz_path": str(npz_path),
                 "sampling_rate_hz": 100.0,
                 "channels": [],
                 "stage_names": [],
                 "epoch_samples": medical_datasets.SLEEP_EDF_EPOCH_SAMPLES,
             }
             with (
-                patch.object(medical_datasets, "prepare_sleep_edf_dataset", return_value=metadata),
-                patch.object(medical_datasets.np, "load", side_effect=RuntimeError("sentinel")) as load,
+                patch.object(
+                    medical_datasets, "_load_validated_sleep_edf_metadata", return_value=metadata
+                ),
+                patch.object(
+                    medical_datasets.np, "load", side_effect=RuntimeError("sentinel")
+                ) as load,
             ):
                 with self.assertRaisesRegex(RuntimeError, "sentinel"):
                     medical_datasets.build_dataset_splits_from_sleep_edf(str(npz_path), cfg)
                 load.assert_called_once_with(str(npz_path.resolve()), allow_pickle=False)
 
-    def test_readiness_manifest_marks_conditional_checkpoint_without_conditional_state_invalid(self) -> None:
+    def test_readiness_manifest_marks_conditional_checkpoint_without_conditional_state_invalid(
+        self,
+    ) -> None:
         cfg = _tiny_cfg(cond_dim=0)
         model = OTFlow(cfg)
         with tempfile.TemporaryDirectory() as tmpdir:
             matrix_root = Path(tmpdir) / "matrix"
-            artifact_dir = matrix_root / "otflow" / "conditional_generation" / "20k" / "sleep_edf" / "transformer"
+            artifact_dir = (
+                matrix_root
+                / "otflow"
+                / "conditional_generation"
+                / "20k"
+                / "sleep_edf"
+                / "transformer"
+            )
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            torch.save({"cfg": cfg.to_dict(), "model_state": model.state_dict()}, artifact_dir / "model.pt")
+            torch.save(
+                {"cfg": cfg.to_dict(), "model_state": model.state_dict()}, artifact_dir / "model.pt"
+            )
             (artifact_dir / "checkpoint_metadata.json").write_text(
                 json.dumps(
                     {
@@ -236,7 +267,7 @@ class ConditionalGenerationFixesTest(unittest.TestCase):
         stages = {int(np.argmax(splits["test"].cond[int(t0)])) for t0 in chosen.tolist()}
         self.assertEqual(stages, {0, 1, 2, 3, 4})
 
-    def test_legacy_model_names_are_rejected(self) -> None:
+    def test_unsupported_model_names_are_rejected(self) -> None:
         rng = np.random.default_rng(3)
         params = rng.normal(size=(80, 4)).astype(np.float32)
         mids = np.linspace(100.0, 101.0, 80, dtype=np.float32)
